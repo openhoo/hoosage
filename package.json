@@ -1,8 +1,8 @@
 {
   "name": "hoosage",
-  "displayName": "hoosage \u2014 Copilot usage, by project",
+  "displayName": "hoosage — Copilot usage, by project",
   "description": "Copilot costs, tokens and model calls by project.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "openhoo",
   "license": "MIT",
   "engines": {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 (2026-09-22)
+
+### Features
+
+- adopt OpenHoo governance toolchain and automated releases (9c1332d)
+
+### Bug Fixes
+
+- mark generated collector token as non-secret for hooray scan (53ed189)
+
+### Other Changes
+
+- Build hoosage Copilot usage extension (23cdc44)
+
 ## 0.3.0 — 2026-09-22
 
 - Support current Copilot application-scoped telemetry settings through a shared local receiver and immutable window-to-project routing.
