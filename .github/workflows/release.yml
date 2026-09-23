@@ -16,14 +16,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
     if: >-
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main') ||
       (github.event_name == 'workflow_dispatch' && github.ref_name == 'main')
-    outputs:
-      published: ${{ steps.finalize.outputs.published }}
-      version: ${{ steps.finalize.outputs.version }}
-      tag: ${{ steps.finalize.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,23 +41,13 @@ jobs:
           version: ${{ env.HOOVERSION_VERSION }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           install-command: npm ci --no-audit
-  vsix:
-    needs: release
-    if: needs.release.outputs.published == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.release.outputs.tag }}
-      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
-        with:
-          node-version: '22'
-          cache: npm
-      - run: npm ci --no-audit && npm run package
       - name: Upload vsix to GitHub release
-        run: gh release upload "${{ needs.release.outputs.tag }}" hoosage.vsix --clobber
+        if: steps.finalize.outputs.published == 'true'
+        run: |
+          gh run download "$SOURCE_RUN_ID" --name hoosage-vsix --dir .
+          gh release upload "$RELEASE_TAG" hoosage.vsix --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          RELEASE_TAG: ${{ steps.finalize.outputs.tag }}
