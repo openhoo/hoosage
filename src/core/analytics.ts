@@ -47,6 +47,36 @@ export function startOfRange(days: number, now = Date.now()): number {
   return start.getTime();
 }
 
+/** Date input values are local calendar days, not UTC dates. */
+export function localDateKey(timestamp: number): string {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+export function periodEnd(now: number, endDate?: string): number | undefined {
+  if (endDate === undefined) return now;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(endDate);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 100 || month < 1 || month > 12 || day < 1 || day > 31)
+    return undefined;
+  const date = new Date(year, month - 1, day);
+  if (localDateKey(date.getTime()) !== endDate) return undefined;
+  if (endDate > localDateKey(now)) return undefined;
+  date.setDate(date.getDate() + 1);
+  return Math.min(now, date.getTime() - 1);
+}
+
+export function shiftLocalDate(dateKey: string, days: number): string | undefined {
+  if (periodEnd(Date.now(), dateKey) === undefined) return undefined;
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = new Date(year!, month! - 1, day!);
+  date.setDate(date.getDate() + days);
+  return localDateKey(date.getTime());
+}
+
 export function filterCalls(
   calls: UsageCall[],
   projectId: string,

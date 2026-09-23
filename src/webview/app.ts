@@ -3,6 +3,9 @@ import {
   daily,
   filterCalls,
   groupSessions,
+  localDateKey,
+  periodEnd,
+  shiftLocalDate,
   totals,
 } from "../core/analytics";
 import {
@@ -32,6 +35,11 @@ let page = ["overview", "projects", "activity", "about"].includes(
   ? String(saved.page)
   : "overview";
 let days = [7, 14, 30].includes(Number(saved.days)) ? Number(saved.days) : 14;
+let endDate =
+  typeof saved.endDate === "string" &&
+  periodEnd(Date.now(), saved.endDate) !== undefined
+    ? saved.endDate
+    : undefined;
 let projectId = typeof saved.projectId === "string" ? saved.projectId : "all";
 let demo = false;
 let real: Snapshot | undefined;
@@ -89,6 +97,7 @@ const paths: Record<string, string> = {
     "M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-2l2 2 M4 17l2 2a7 7 0 0 0 12-2",
   bolt: "M13 2 4 14h7l-1 8 10-13h-7l1-7Z",
   chevron: "m9 5 7 7-7 7",
+  calendar: "M8 2v4 M16 2v4 M3 9h18 M5 4h14a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z",
   expand: "M15 3h6v6 M21 3l-7 7 M9 21H3v-6 M3 21l7-7",
 };
 const icon = (name: string) =>
@@ -96,7 +105,7 @@ const icon = (name: string) =>
 const mark = `<svg class="owl" aria-hidden="true" viewBox="0 0 40 40" fill="none"><path d="M7 9 14 13a14 14 0 0 1 12 0l7-4v14a13 13 0 0 1-26 0Z" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"/><circle cx="14" cy="22" r="4" stroke="currentColor" stroke-width="2"/><circle cx="26" cy="22" r="4" stroke="currentColor" stroke-width="2"/><path d="m17 29 3 3 3-3" stroke="currentColor" stroke-width="2"/></svg>`;
 
 function save() {
-  api?.setState({ page, days, projectId });
+  api?.setState({ page, days, endDate, projectId });
 }
 function send(type: string, extra: Record<string, unknown> = {}) {
   api?.postMessage({ type, ...extra });
@@ -111,7 +120,14 @@ function announce(message: string) {
   }, 3500);
 }
 function selectedCalls() {
-  return data ? filterCalls(data.calls, projectId, days, data.updatedAt) : [];
+  return data
+    ? filterCalls(
+        data.calls,
+        page === "projects" ? "all" : projectId,
+        days,
+        periodEnd(data.updatedAt, endDate) ?? data.updatedAt,
+      )
+    : [];
 }
 function action(label: string, command: string, primary = false) {
   return `<button class="${primary ? "primary" : "button"}" data-action="${command}">${label}${icon("arrow")}</button>`;
@@ -119,6 +135,10 @@ function action(label: string, command: string, primary = false) {
 
 function render() {
   if (!data) return;
+  if (endDate && periodEnd(data.updatedAt, endDate) === undefined)
+    endDate = undefined;
+  const today = localDateKey(data.updatedAt);
+  const selectedDate = endDate ?? today;
   const focus = document.activeElement as HTMLElement | null;
   const focusKey = focus?.dataset.focus;
   const scroll = window.scrollY;
@@ -149,7 +169,7 @@ function render() {
     <div class="workspace">
     <main>${demo ? `<div class="demo-banner"><span><strong>Preview</strong> · Sample data</span><button data-action="exitDemo">Exit preview ${icon("arrow")}</button></div>` : ""}
     <div class="page-heading"><div><h1>${{ overview: "Copilot usage", projects: "Projects", activity: "Activity", about: "Usage details" }[page]}</h1></div><div class="heading-actions"><button class="icon-button expand-button" data-action="open" title="Open full dashboard" aria-label="Open full dashboard">${icon("expand")}</button><button class="icon-button" data-action="refresh" data-focus="refresh" title="Refresh usage" aria-label="Refresh usage">${icon("refresh")}</button></div></div>
-    ${page !== "about" ? `<div class="toolbar"><label class="project-picker">${icon("projects")}<span class="sr-only">Project</span><select id="project" data-focus="project" aria-label="Project"><option value="all">All projects</option>${data.projects.map((p) => `<option value="${h(p.id)}" ${projectId === p.id ? "selected" : ""}>${h(p.name)}</option>`).join("")}</select></label><div class="toolbar-right"><div class="range" role="group" aria-label="Date range">${[7, 14, 30].map((d) => `<button data-focus="days-${d}" data-days="${d}" aria-pressed="${days === d}">${d} days</button>`).join("")}</div><button class="button export" data-action="export" data-focus="export">${icon("download")}Export</button></div></div>` : ""}
+    ${page !== "about" ? `<div class="toolbar">${page === "projects" ? '<span class="toolbar-title">All projects</span>' : `<label class="project-picker">${icon("projects")}<span class="sr-only">Project</span><select id="project" data-focus="project" aria-label="Project"><option value="all">All projects</option>${data.projects.map((p) => `<option value="${h(p.id)}" ${projectId === p.id ? "selected" : ""}>${h(p.name)}</option>`).join("")}</select></label>`}<div class="toolbar-right"><div class="range" role="group" aria-label="Period length">${[7, 14, 30].map((d) => `<button data-focus="days-${d}" data-days="${d}" aria-pressed="${days === d}">${d} days</button>`).join("")}</div><div class="date-nav" role="group" aria-label="Browse calendar history"><button class="date-step" data-shift="previous" data-focus="previous" aria-label="Previous ${days} days" title="Previous ${days} days">‹</button><label class="date-end">${icon("calendar")}<span>Ending</span><input type="date" id="end-date" data-focus="end-date" aria-label="Period end date" value="${selectedDate}" max="${today}"></label><button class="date-step" data-shift="next" data-focus="next" aria-label="Next ${days} days" title="Next ${days} days" ${selectedDate >= today ? "disabled" : ""}>›</button></div><button class="button export" data-action="export" data-focus="export">${icon("download")}Export</button></div></div>` : ""}
     ${data.errors.map((error) => `<div class="notice" role="status">${icon("about")}${h(error)}</div>`).join("")}
     ${!demo && duplicateNames && page !== "about" ? `<div class="notice" role="status">${icon("about")}Projects with the same name may be separate Windows, WSL, container, clone or worktree locations. Their usage stays separate by workspace identity; Hoosage never merges them by name.</div>` : ""}
     ${!demo && data.indexing && page !== "about" ? `<section class="onboarding" aria-busy="true">${icon("activity")}<h2>Indexing saved usage…</h2><p>Reading hoosage's saved project records and local sessions. Totals will appear when the scan is complete.</p></section>` : page === "about" ? about() : page === "projects" ? projects(calls) : page === "activity" ? activity(calls) : overview(calls)}
@@ -190,7 +210,8 @@ function overview(calls: UsageCall[]) {
 }
 
 function chart(calls: UsageCall[]) {
-  const points = daily(calls, days, data!.updatedAt);
+  const end = periodEnd(data!.updatedAt, endDate) ?? data!.updatedAt;
+  const points = daily(calls, days, end);
   const maximum = Math.max(...points.map((p) => p.tokens), 1);
   const maxLabel = compact(maximum);
   const bars = points
@@ -202,7 +223,7 @@ function chart(calls: UsageCall[]) {
       return `<g class="chart-bar" tabindex="0" role="img" aria-label="${new Date(p.date).toLocaleDateString("en", { month: "short", day: "numeric" })}: ${number(p.input)} input, ${number(p.output)} output tokens${p.missingUsage ? "; incomplete token data" : ""}"><title>${new Date(p.date).toLocaleDateString("en")} · ${number(p.tokens)} observed tokens · ${callCount(p)}</title><rect x="${x}" y="${182 - input}" width="${width}" height="${input}" rx="2" class="bar-input"/><rect x="${x}" y="${182 - input - output}" width="${width}" height="${output}" rx="2" class="bar-output"/>${i === 0 || i === days - 1 || i % Math.ceil(days / 5) === 0 ? `<text x="${x + width / 2}" y="209" text-anchor="middle">${new Date(p.date).toLocaleDateString("en", { month: "short", day: "numeric" })}</text>` : ""}</g>`;
     })
     .join("");
-  return `<div class="chart-wrap"><svg class="chart" viewBox="0 0 720 220" role="img" aria-label="Daily input and output token usage for the last ${days} days"><text x="0" y="31">${maxLabel}</text><text x="0" y="108">${compact(maximum / 2)}</text><text x="20" y="186">0</text><path d="M48 28H710 M48 105H710 M48 182H710" class="gridline"/>${bars}</svg></div>${!calls.length ? '<p class="chart-empty">No calls in this period.</p>' : ""}`;
+  return `<div class="chart-wrap"><svg class="chart" viewBox="0 0 720 220" role="img" aria-label="Daily input and output token usage for ${days} days ending ${h(localDateKey(end))}"><text x="0" y="31">${maxLabel}</text><text x="0" y="108">${compact(maximum / 2)}</text><text x="20" y="186">0</text><path d="M48 28H710 M48 105H710 M48 182H710" class="gridline"/>${bars}</svg></div>${!calls.length ? '<p class="chart-empty">No calls in this period.</p>' : ""}`;
 }
 
 function modelMix(calls: UsageCall[]) {
@@ -224,7 +245,7 @@ function modelMix(calls: UsageCall[]) {
 
 function projects(calls: UsageCall[], embedded = false) {
   const rows = data!.projects
-    .filter((p) => projectId === "all" || p.id === projectId)
+    .filter((p) => !embedded || projectId === "all" || p.id === projectId)
     .map((p) => {
       const usage = calls.filter((c) => c.projectId === p.id);
       return { project: p, usage, cost: costs(usage), ...totals(usage) };
@@ -276,7 +297,7 @@ function about() {
 
 root.addEventListener("click", (event) => {
   const button = (event.target as Element).closest<HTMLElement>(
-    "[data-action],[data-page],[data-days],[data-project],[data-session]",
+    "[data-action],[data-page],[data-days],[data-shift],[data-project],[data-session]",
   );
   if (!button) return;
   event.preventDefault();
@@ -290,6 +311,18 @@ root.addEventListener("click", (event) => {
   }
   if (button.dataset.days) {
     days = Number(button.dataset.days);
+    visibleSessions = 100;
+    save();
+    render();
+    return;
+  }
+  if (button.dataset.shift) {
+    const today = localDateKey(data!.updatedAt);
+    const shifted = shiftLocalDate(
+      endDate ?? today,
+      button.dataset.shift === "previous" ? -days : days,
+    );
+    if (shifted) endDate = shifted >= today ? undefined : shifted;
     visibleSessions = 100;
     save();
     render();
@@ -338,7 +371,12 @@ root.addEventListener("click", (event) => {
       announce("Exit preview to export usage.");
       return;
     }
-    send("export", { projectId, days, format: "csv" });
+    send("export", {
+      projectId: page === "projects" ? "all" : projectId,
+      days,
+      endDate,
+      format: "csv",
+    });
     return;
   }
   if (action === "refresh") {
@@ -365,6 +403,17 @@ root.addEventListener("change", (event) => {
   const select = event.target as HTMLSelectElement;
   if (select.id === "project") {
     projectId = select.value;
+    visibleSessions = 100;
+    save();
+    render();
+  }
+  if (select.id === "end-date") {
+    const today = localDateKey(data!.updatedAt);
+    endDate =
+      periodEnd(data!.updatedAt, select.value) === undefined ||
+      select.value === today
+        ? undefined
+        : select.value;
     visibleSessions = 100;
     save();
     render();

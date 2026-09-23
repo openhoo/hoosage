@@ -19,7 +19,14 @@ import {
   startCollector,
   type Collector,
 } from "./core/collector";
-import { exportCsv, filterCalls, totals } from "./core/analytics";
+import {
+  exportCsv,
+  filterCalls,
+  localDateKey,
+  periodEnd,
+  startOfRange,
+  totals,
+} from "./core/analytics";
 import {
   costs,
   costLabel,
@@ -731,11 +738,18 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   }
 
-  async function exportUsage(projectId = "all", days = 30, format = "csv") {
-    const calls = filterCalls(snapshot.calls, projectId, days);
+  async function exportUsage(
+    projectId = "all",
+    days = 30,
+    format = "csv",
+    endDate?: string,
+  ) {
+    const end = periodEnd(Date.now(), endDate);
+    if (end === undefined) return;
+    const calls = filterCalls(snapshot.calls, projectId, days, end);
     const uri = await vscode.window.showSaveDialog({
       defaultUri: vscode.Uri.file(
-        `hoosage-${new Date().toISOString().slice(0, 10)}.${format}`,
+        `hoosage-${localDateKey(startOfRange(days, end))}-to-${localDateKey(end)}.${format}`,
       ),
       filters: format === "csv" ? { CSV: ["csv"] } : { JSON: ["json"] },
     });
@@ -823,12 +837,16 @@ export async function activate(context: vscode.ExtensionContext) {
                 (m.projectId === "all" ||
                   snapshot.projects.some((p) => p.id === m.projectId)) &&
                 [7, 14, 30].includes(Number(m.days)) &&
+                (m.endDate === undefined ||
+                  (typeof m.endDate === "string" &&
+                    periodEnd(Date.now(), m.endDate) !== undefined)) &&
                 ["csv", "json"].includes(String(m.format))
               )
                 await exportUsage(
                   m.projectId,
                   Number(m.days),
                   String(m.format),
+                  m.endDate as string | undefined,
                 );
               break;
           }

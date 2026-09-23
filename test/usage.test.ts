@@ -18,6 +18,9 @@ import {
   daily,
   exportCsv,
   groupSessions,
+  localDateKey,
+  periodEnd,
+  shiftLocalDate,
   startOfRange,
 } from "../src/core/analytics";
 import { startCollector, storedSpan } from "../src/core/collector";
@@ -279,6 +282,20 @@ test("project filtering, local calendar boundaries and cache accounting are cons
     daily([a, b], 7, now).reduce((n, d) => n + d.tokens, 0),
     3000,
   );
+});
+
+test("calendar can browse and export a completed period years in the past", () => {
+  const now = new Date(2026, 8, 23, 12).getTime();
+  const end = periodEnd(now, "2025-05-25")!;
+  const oldCall = { ...parseSpan(span(), "a")!, timestamp: new Date(2025, 4, 20, 9).getTime() };
+  const nextDay = { ...oldCall, id: "next", timestamp: new Date(2025, 4, 26, 0).getTime() };
+  assert.equal(end, new Date(2025, 4, 25, 23, 59, 59, 999).getTime());
+  assert.equal(localDateKey(startOfRange(7, end)), "2025-05-19");
+  assert.deepEqual(filterCalls([oldCall, nextDay], "a", 7, end), [oldCall]);
+  assert.equal(daily([oldCall], 7, end).reduce((n, day) => n + day.calls, 0), 1);
+  assert.equal(shiftLocalDate("2025-01-01", -1), "2024-12-31");
+  assert.equal(periodEnd(now, "2025-02-29"), undefined);
+  assert.equal(periodEnd(now, "2027-01-01"), undefined);
 });
 
 test("unlinked calls remain separate and session IDs cannot cross projects or sources", () => {

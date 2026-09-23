@@ -44,7 +44,7 @@ Want a look first? **Explore a preview** shows clearly labelled sample data. Sam
 
 Compare each workspace's model calls, tokens and usage cost in US dollars. The **≈** marker identifies estimated costs.
 
-![Projects view comparing four workspaces by model calls, tokens, estimated USD cost and share of usage — sample data](media/screenshots/projects.png)
+![Projects view comparing all sample projects by model calls, tokens, estimated USD cost and share of usage — sample data](media/screenshots/projects.png)
 
 ### Session activity
 
@@ -69,7 +69,7 @@ Cache reads are displayed separately as reported by Copilot; they are **not adde
 
 The extension does **not** report your invoice, remaining monthly allowance, premium requests, inline completion usage, pre-setup history, other machines or GitHub cloud-agent activity. Background agents are included only when their chat spans reach the configured endpoint.
 
-Date ranges use local calendar days, include today and exclude future events. Chat calls are assigned to their start date; CLI summaries are assigned to their shutdown date. Chat usage updates after Copilot exports completed spans; CLI usage appears after session shutdown. hoosage polls local history every five seconds.
+The dashboard shows 7, 14 or 30 local calendar days. Use the **Ending** calendar or the previous/next buttons to browse any earlier period; the next button stops at today. The project list always shows all projects for the selected period. CSV export uses the same period and project selection as the page. Chat calls are assigned to their start date; CLI summaries are assigned to their shutdown date. Chat usage updates after Copilot exports completed spans; CLI usage appears after session shutdown. hoosage polls local history every five seconds.
 
 ## Costs in US dollars
 
