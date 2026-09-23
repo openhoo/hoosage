@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0 (2026-09-23)
+
+### Features
+
+- **hoosage:** browse older dates and improve dashboard readability (#34) (6d4439c)
+
 ## 0.8.6 (2026-09-23)
 
 ### Bug Fixes
