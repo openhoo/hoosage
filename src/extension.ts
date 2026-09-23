@@ -30,6 +30,18 @@ const KEYS = [
   "otlpEndpoint",
 ] as const;
 const BACKUP = "copilotSettingsBackup";
+type Connection = { port: number; token: string };
+const parseConnection = (value: unknown): Connection | undefined => {
+  if (typeof value !== "object" || value === null) return undefined;
+  const saved = value as Record<string, unknown>;
+  return Number.isInteger(saved.port) &&
+    (saved.port as number) > 1023 &&
+    (saved.port as number) < 65536 &&
+    typeof saved.token === "string" &&
+    /^[a-f0-9]{48}$/.test(saved.token)
+    ? { port: saved.port as number, token: saved.token }
+    : undefined;
+};
 const esc = (s: string) =>
   s.replace(
     /[&<>"']/g,
@@ -88,18 +100,11 @@ export async function activate(context: vscode.ExtensionContext) {
   let changingSettings = false;
   let collector: Collector | undefined;
   let collectorError: string | undefined;
-  let connection: { port: number; token: string } | undefined;
+  let connection: Connection | undefined;
   try {
-    const saved = JSON.parse(
-      await readFile(join(storage, "collector.json"), "utf8"),
+    connection = parseConnection(
+      JSON.parse(await readFile(join(storage, "collector.json"), "utf8")),
     );
-    if (
-      Number.isInteger(saved.port) &&
-      saved.port > 1023 &&
-      saved.port < 65536 &&
-      /^[a-f0-9]{48}$/.test(saved.token)
-    )
-      connection = saved;
   } catch {
     /* A profile is unconfigured until the user enables tracking. */
   }
@@ -153,16 +158,9 @@ export async function activate(context: vscode.ExtensionContext) {
   async function ensureCollector(force = false) {
     if (!connection) {
       try {
-        const saved = JSON.parse(
-          await readFile(join(storage, "collector.json"), "utf8"),
+        connection = parseConnection(
+          JSON.parse(await readFile(join(storage, "collector.json"), "utf8")),
         );
-        if (
-          Number.isInteger(saved.port) &&
-          saved.port > 1023 &&
-          saved.port < 65536 &&
-          /^[a-f0-9]{48}$/.test(saved.token)
-        )
-          connection = saved;
       } catch {}
     }
     if (
@@ -448,9 +446,10 @@ export async function activate(context: vscode.ExtensionContext) {
         } catch (error) {
           await candidate.close();
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-          connection = JSON.parse(
-            await readFile(join(storage, "collector.json"), "utf8"),
+          connection = parseConnection(
+            JSON.parse(await readFile(join(storage, "collector.json"), "utf8")),
           );
+          if (!connection) throw new Error("Invalid local collector settings.");
         }
       }
       await ensureCollector(true);

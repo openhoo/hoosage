@@ -155,69 +155,71 @@ export class CliUsageScanner {
     resolve: Resolve,
   ): Promise<boolean> {
     const path = join(this.root, sessionId, "events.jsonl");
-    let st = this.files.get(sessionId) ?? freshState();
-    const info = await stat(path).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (!info?.isFile()) return true;
-    if (st.inode !== info.ino || info.size < st.offset) {
-      // Rotation or truncation: emitted calls and cumulative baselines
-      // belong to the old stream and must not survive the reset.
-      for (const id of st.emitted) this.calls.delete(id);
-      st = freshState();
-    }
-    st.inode = info.ino;
-    this.files.set(sessionId, st);
-    if (st.workspace === undefined || st.workspace === null) {
-      // workspace.yaml is written once at session start; a missing file is
-      // re-probed on each poll so late writes are still picked up.
-      const content = await readFile(
-        join(this.root, sessionId, "workspace.yaml"),
-        "utf8",
-      ).catch((error) => {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT")
-          return undefined;
-        throw error;
-      });
-      st.workspace = content === undefined ? null : parseWorkspace(content);
-      if (st.workspace) {
-        if (st.cwd === undefined && st.workspace.cwd) st.cwd = st.workspace.cwd;
-        // Re-tag calls emitted before the file appeared.
-        st.projectId = undefined;
-        for (const id of st.emitted) {
-          const call = this.calls.get(id);
-          if (!call) continue;
-          call.source =
-            st.workspace.clientName === JETBRAINS_CLIENT ? "jetbrains" : "cli";
-          call.projectId = this.projectIdFor(st, resolve);
-        }
-      }
-    }
-    const length = Math.min(BATCH, info.size - st.offset);
-    const caughtUp = info.size <= st.offset + length;
-    if (!length) return caughtUp;
     const file = await open(path, "r").catch((error) => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     });
-    if (!file) return false;
+    if (!file) return true;
     try {
-      const buffer = Buffer.alloc(length);
-      const { bytesRead } = await file.read(buffer, 0, length, st.offset);
-      st.offset += bytesRead;
-      this.consume(
-        sessionId,
-        st,
-        st.decoder.write(buffer.subarray(0, bytesRead)),
-        resolve,
-      );
-    } catch {
-      return false;
+      const info = await file.stat();
+      if (!info.isFile()) return true;
+      let st = this.files.get(sessionId) ?? freshState();
+      if (st.inode !== info.ino || info.size < st.offset) {
+        // Rotation or truncation: emitted calls and cumulative baselines
+        // belong to the old stream and must not survive the reset.
+        for (const id of st.emitted) this.calls.delete(id);
+        st = freshState();
+      }
+      st.inode = info.ino;
+      this.files.set(sessionId, st);
+      if (st.workspace === undefined || st.workspace === null) {
+        // workspace.yaml is written once at session start; a missing file is
+        // re-probed on each poll so late writes are still picked up.
+        const content = await readFile(
+          join(this.root, sessionId, "workspace.yaml"),
+          "utf8",
+        ).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT")
+            return undefined;
+          throw error;
+        });
+        st.workspace = content === undefined ? null : parseWorkspace(content);
+        if (st.workspace) {
+          if (st.cwd === undefined && st.workspace.cwd)
+            st.cwd = st.workspace.cwd;
+          // Re-tag calls emitted before the file appeared.
+          st.projectId = undefined;
+          for (const id of st.emitted) {
+            const call = this.calls.get(id);
+            if (!call) continue;
+            call.source =
+              st.workspace.clientName === JETBRAINS_CLIENT
+                ? "jetbrains"
+                : "cli";
+            call.projectId = this.projectIdFor(st, resolve);
+          }
+        }
+      }
+      const length = Math.min(BATCH, info.size - st.offset);
+      const caughtUp = info.size <= st.offset + length;
+      if (!length) return caughtUp;
+      try {
+        const buffer = Buffer.alloc(length);
+        const { bytesRead } = await file.read(buffer, 0, length, st.offset);
+        st.offset += bytesRead;
+        this.consume(
+          sessionId,
+          st,
+          st.decoder.write(buffer.subarray(0, bytesRead)),
+          resolve,
+        );
+      } catch {
+        return false;
+      }
+      return caughtUp;
     } finally {
       await file.close();
     }
-    return caughtUp;
   }
 
   private consume(
