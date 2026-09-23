@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0 (2026-09-23)
+
+### Features
+
+- **hoosage:** polish project activity and usage views (#40) (fd1cb60)
+
 ## 0.11.0 (2026-09-23)
 
 ### Features
