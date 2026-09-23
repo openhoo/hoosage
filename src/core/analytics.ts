@@ -75,6 +75,67 @@ export function shiftLocalDate(dateKey: string, days: number): string | undefine
   return localDateKey(date.getTime());
 }
 
+export interface DateBounds {
+  start: number;
+  end: number;
+  days: number;
+}
+
+/** Inclusive local calendar dates. UTC date arithmetic avoids DST changing
+ * the number of selected days. */
+export function customDateBounds(
+  now: number,
+  startDate: string,
+  endDate: string,
+): DateBounds | undefined {
+  const startEnd = periodEnd(now, startDate);
+  const end = periodEnd(now, endDate);
+  if (startEnd === undefined || end === undefined || startDate > endDate)
+    return undefined;
+  const start = startOfRange(1, startEnd);
+  const [startYear, startMonth, startDay] = startDate.split("-").map(Number);
+  const [endYear, endMonth, endDay] = endDate.split("-").map(Number);
+  const days =
+    (Date.UTC(endYear!, endMonth! - 1, endDay!) -
+      Date.UTC(startYear!, startMonth! - 1, startDay!)) /
+      86_400_000 +
+    1;
+  return { start, end, days };
+}
+
+export function filterCallsBetween(
+  calls: UsageCall[],
+  projectId: string,
+  bounds: DateBounds,
+): UsageCall[] {
+  return calls.filter(
+    (call) =>
+      (projectId === "all" || call.projectId === projectId) &&
+      call.timestamp >= bounds.start &&
+      call.timestamp <= bounds.end,
+  );
+}
+
+/** At most 30 calendar buckets, so multi-year ranges stay legible. */
+export function usageBuckets(calls: UsageCall[], bounds: DateBounds) {
+  const interval =
+    [1, 7, 14, 30, 90, 365].find((size) => Math.ceil(bounds.days / size) <= 30) ??
+    Math.ceil(bounds.days / 30 / 365) * 365;
+  const buckets: Array<Totals & { start: number; end: number }> = [];
+  let cursor = new Date(bounds.start);
+  while (cursor.getTime() <= bounds.end) {
+    const start = cursor.getTime();
+    cursor = new Date(cursor);
+    cursor.setDate(cursor.getDate() + interval);
+    const end = Math.min(cursor.getTime() - 1, bounds.end);
+    const usage = totals(
+      calls.filter((call) => call.timestamp >= start && call.timestamp <= end),
+    );
+    buckets.push({ start, end, ...usage });
+  }
+  return { interval, buckets };
+}
+
 export function filterCalls(
   calls: UsageCall[],
   projectId: string,

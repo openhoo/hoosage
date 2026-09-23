@@ -31,14 +31,20 @@ Want a look first? **Explore a preview** shows clearly labelled sample data. Sam
 - A dashboard and Activity Bar view with dark, light, high-contrast and narrow layouts.
 - Costs in USD for the overview, projects, models, sessions and status bar.
 - Observed input/output tokens, model calls, linked sessions and average call duration.
-- Daily usage charts, model shares and a project comparison table.
-- 7-, 14- and 30-day filters, project selection and session drilldowns.
+- Usage charts with readable intervals for long periods, model shares and a project comparison table.
+- 7-, 14- and 30-day presets, a custom from/to calendar range, project selection and session drilldowns.
 - CSV export of the selected project and period, including cost source and price-table date; unknown values stay empty.
 - A status bar indicator for today's current-project usage.
 - No hoosage account, cloud backend, credentials or outbound analytics.
 - Copilot CLI and JetBrains Copilot usage from local session-state files, grouped by working directory.
 
 ## Screenshots
+
+### Date range picker
+
+Choose exact start and end dates, jump by month or year, or move the selected period with the toolbar arrows. The calendar works with keyboard navigation and adapts to narrow windows.
+
+![Custom date range calendar showing highlighted start and end dates and the selected span — sample data](media/screenshots/calendar.png)
 
 ### Project costs
 
@@ -69,7 +75,7 @@ Cache reads are displayed separately as reported by Copilot; they are **not adde
 
 The extension does **not** report your invoice, remaining monthly allowance, premium requests, inline completion usage, history VS Code has already removed, other machines or GitHub cloud-agent activity. Background agents are included only when their chat spans reach the configured endpoint.
 
-The dashboard shows 7, 14 or 30 local calendar days. Use the **Ending** calendar or the previous/next buttons to browse any earlier period; the next button stops at today. The project list always shows all projects for the selected period. CSV export uses the same period and project selection as the page. Chat calls are assigned to their start date; CLI summaries are assigned to their shutdown date. Chat usage updates after Copilot exports completed spans; CLI usage appears after session shutdown. hoosage polls local history every five seconds.
+The dashboard offers 7, 14 and 30-day presets plus a **Custom** from/to range. Open the date-range picker to choose the start and end on a calendar; its month and year controls can jump to older history. The previous/next buttons move the whole selected period, stopping at today. The calendar supports arrow keys, Home/End, Page Up/Down (hold Shift to jump a year), Enter and Escape. Long ranges are grouped into legible chart intervals without changing totals. The project list always shows all projects for the selected period. CSV export uses the same period and project selection as the page. Chat calls are assigned to their start date; CLI summaries are assigned to their shutdown date. Chat usage updates after Copilot exports completed spans; CLI usage appears after session shutdown. hoosage polls local history every five seconds.
 
 ## Costs in US dollars
 

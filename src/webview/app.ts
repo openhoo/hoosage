@@ -1,12 +1,14 @@
 import {
   byModel,
-  daily,
-  filterCalls,
+  customDateBounds,
+  filterCallsBetween,
   groupSessions,
   localDateKey,
   periodEnd,
   shiftLocalDate,
+  startOfRange,
   totals,
+  usageBuckets,
 } from "../core/analytics";
 import {
   costs,
@@ -40,6 +42,15 @@ let endDate =
   periodEnd(Date.now(), saved.endDate) !== undefined
     ? saved.endDate
     : undefined;
+let customStartDate =
+  typeof saved.customStartDate === "string" ? saved.customStartDate : "";
+let customEndDate =
+  typeof saved.customEndDate === "string" ? saved.customEndDate : "";
+let rangeMode: "preset" | "custom" =
+  saved.rangeMode === "custom" &&
+  customDateBounds(Date.now(), customStartDate, customEndDate)
+    ? "custom"
+    : "preset";
 let projectId = typeof saved.projectId === "string" ? saved.projectId : "all";
 let demo = false;
 let real: Snapshot | undefined;
@@ -49,6 +60,13 @@ let visibleSessions = 100;
 let toast = "";
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+let calendarOpen = false;
+let calendarMonth = "";
+let calendarFocusDate = "";
+let draftStartDate = "";
+let draftEndDate = "";
+let draftMode: "preset" | "custom" = "preset";
+let activeBoundary: "start" | "end" = "end";
 const number = (n: number) =>
   new Intl.NumberFormat("en", { maximumFractionDigits: 0 }).format(n);
 const count = (n: number, label: string) =>
@@ -105,7 +123,15 @@ const icon = (name: string) =>
 const mark = `<svg class="owl" aria-hidden="true" viewBox="0 0 40 40" fill="none"><path d="M7 9 14 13a14 14 0 0 1 12 0l7-4v14a13 13 0 0 1-26 0Z" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"/><circle cx="14" cy="22" r="4" stroke="currentColor" stroke-width="2"/><circle cx="26" cy="22" r="4" stroke="currentColor" stroke-width="2"/><path d="m17 29 3 3 3-3" stroke="currentColor" stroke-width="2"/></svg>`;
 
 function save() {
-  api?.setState({ page, days, endDate, projectId });
+  api?.setState({
+    page,
+    days,
+    endDate,
+    customStartDate,
+    customEndDate,
+    rangeMode,
+    projectId,
+  });
 }
 function send(type: string, extra: Record<string, unknown> = {}) {
   api?.postMessage({ type, ...extra });
@@ -121,24 +147,88 @@ function announce(message: string) {
 }
 function selectedCalls() {
   return data
-    ? filterCalls(
+    ? filterCallsBetween(
         data.calls,
         page === "projects" ? "all" : projectId,
-        days,
-        periodEnd(data.updatedAt, endDate) ?? data.updatedAt,
+        selectedBounds(),
       )
     : [];
 }
+
+function selectedBounds() {
+  const now = data?.updatedAt ?? Date.now();
+  if (rangeMode === "custom") {
+    const custom = customDateBounds(now, customStartDate, customEndDate);
+    if (custom) return custom;
+  }
+  const end = periodEnd(now, endDate) ?? now;
+  return { start: startOfRange(days, end), end, days };
+}
+
+function dateLabel(key: string, year = true) {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    ...(year ? { year: "numeric" } : {}),
+  }).format(new Date(y!, m! - 1, d!));
+}
+
+function rangeLabel(start: string, end: string) {
+  return `${dateLabel(start, start.slice(0, 4) !== end.slice(0, 4))} – ${dateLabel(end)}`;
+}
 function action(label: string, command: string, primary = false) {
   return `<button class="${primary ? "primary" : "button"}" data-action="${command}">${label}${icon("arrow")}</button>`;
+}
+
+function calendarPicker(today: string) {
+  const [year, month] = calendarMonth.split("-").map(Number);
+  const first = new Date(year!, month! - 1, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const monthTitle = new Intl.DateTimeFormat("en", {
+    month: "long",
+    year: "numeric",
+  }).format(first);
+  const daysGrid = Array.from({ length: 42 }, (_, index) => {
+    const day = new Date(year!, month! - 1, index - offset + 1);
+    const key = localDateKey(day.getTime());
+    const otherMonth = day.getMonth() !== month! - 1;
+    const selected = key === draftStartDate || key === draftEndDate;
+    const inRange = key >= draftStartDate && key <= draftEndDate;
+    const label = `${dateLabel(key)}${key === today ? ", today" : ""}${key === draftStartDate ? ", range start" : ""}${key === draftEndDate ? ", range end" : ""}`;
+    return `<button type="button" class="calendar-day${otherMonth ? " other-month" : ""}${inRange ? " in-range" : ""}${selected ? " range-edge" : ""}${key === today ? " is-today" : ""}" data-calendar-day="${key}" data-focus="calendar-day-${key}" tabindex="${key === calendarFocusDate ? 0 : -1}" aria-label="${h(label)}" ${key === today ? 'aria-current="date"' : ""} ${key > today ? "disabled" : ""}>${day.getDate()}</button>`;
+  }).join("");
+  const canAdvance = calendarMonth.slice(0, 7) < today.slice(0, 7);
+  const nextYear = localDateKey(new Date(year! + 1, month! - 1, 1).getTime());
+  const canAdvanceYear = nextYear.slice(0, 7) <= today.slice(0, 7);
+  return `<div class="calendar-popover" id="date-range-picker" role="dialog" aria-label="Choose date range">
+    <div class="calendar-top"><div><span class="calendar-eyebrow">EXPLORE USAGE</span><h2>Choose a date range</h2></div><button type="button" class="calendar-close" data-calendar-action="cancel" aria-label="Close calendar">×</button></div>
+    <div class="calendar-boundaries" role="group" aria-label="Range boundaries"><button type="button" class="calendar-boundary${activeBoundary === "start" ? " active" : ""}" data-calendar-boundary="start" data-focus="calendar-start" aria-pressed="${activeBoundary === "start"}"><span>FROM</span><strong>${h(dateLabel(draftStartDate))}</strong></button><span class="calendar-boundary-arrow" aria-hidden="true">→</span><button type="button" class="calendar-boundary${activeBoundary === "end" ? " active" : ""}" data-calendar-boundary="end" data-focus="calendar-end" aria-pressed="${activeBoundary === "end"}"><span>TO</span><strong>${h(dateLabel(draftEndDate))}</strong></button></div>
+    <div class="calendar-month-bar"><div class="calendar-month-nav"><button type="button" data-calendar-nav="-12" data-focus="calendar-prev-year" aria-label="Previous year" title="Previous year">«</button><button type="button" data-calendar-nav="-1" data-focus="calendar-prev-month" aria-label="Previous month" title="Previous month">‹</button></div><h3 id="calendar-month-title">${h(monthTitle)}</h3><div class="calendar-month-nav"><button type="button" data-calendar-nav="1" data-focus="calendar-next-month" aria-label="Next month" title="Next month" ${canAdvance ? "" : "disabled"}>›</button><button type="button" data-calendar-nav="12" data-focus="calendar-next-year" aria-label="Next year" title="Next year" ${canAdvanceYear ? "" : "disabled"}>»</button></div></div>
+    <div class="calendar-weekdays" aria-hidden="true">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => `<span>${day}</span>`).join("")}</div>
+    <div class="calendar-grid" role="group" aria-labelledby="calendar-month-title">${daysGrid}</div>
+    <div class="calendar-bottom"><div><span class="calendar-selection-label">${draftMode === "custom" ? "CUSTOM RANGE" : `${days}-DAY PRESET`}</span><strong>${h(rangeLabel(draftStartDate, draftEndDate))}</strong></div><button type="button" class="calendar-today" data-calendar-action="today">Today</button></div>
+    <div class="calendar-actions"><button type="button" class="button" data-calendar-action="cancel">Cancel</button><button type="button" class="primary" data-calendar-action="apply">Apply range ${icon("arrow")}</button></div>
+  </div>`;
+}
+
+function dateControls(today: string) {
+  const bounds = selectedBounds();
+  const start = localDateKey(bounds.start);
+  const end = localDateKey(bounds.end);
+  return `<div class="range" role="group" aria-label="Period length">${[7, 14, 30].map((value) => `<button type="button" data-focus="days-${value}" data-days="${value}" aria-pressed="${rangeMode === "preset" && days === value}">${value} days</button>`).join("")}<button type="button" data-calendar-action="custom" data-focus="days-custom" aria-pressed="${rangeMode === "custom"}">Custom</button></div><div class="date-nav" role="group" aria-label="Browse calendar history"><button type="button" class="date-step previous" data-shift="previous" data-focus="previous" aria-label="Previous ${bounds.days} days" title="Previous ${bounds.days} days">${icon("chevron")}</button><button type="button" class="date-trigger" data-calendar-action="open" data-focus="calendar-trigger" aria-label="Choose date range, ${h(rangeLabel(start, end))}" aria-expanded="${calendarOpen}" aria-controls="date-range-picker">${icon("calendar")}<span><small>DATE RANGE</small><strong>${h(rangeLabel(start, end))}</strong></span>${icon("chevron")}</button><button type="button" class="date-step" data-shift="next" data-focus="next" aria-label="Next ${bounds.days} days" title="Next ${bounds.days} days" ${end >= today ? "disabled" : ""}>${icon("chevron")}</button>${calendarOpen ? `<div class="calendar-backdrop" data-calendar-action="cancel" aria-hidden="true"></div>${calendarPicker(today)}` : ""}</div>`;
 }
 
 function render() {
   if (!data) return;
   if (endDate && periodEnd(data.updatedAt, endDate) === undefined)
     endDate = undefined;
+  if (
+    rangeMode === "custom" &&
+    !customDateBounds(data.updatedAt, customStartDate, customEndDate)
+  )
+    rangeMode = "preset";
   const today = localDateKey(data.updatedAt);
-  const selectedDate = endDate ?? today;
   const focus = document.activeElement as HTMLElement | null;
   const focusKey = focus?.dataset.focus;
   const scroll = window.scrollY;
@@ -169,7 +259,7 @@ function render() {
     <div class="workspace">
     <main>${demo ? `<div class="demo-banner"><span><strong>Preview</strong> · Sample data</span><button data-action="exitDemo">Exit preview ${icon("arrow")}</button></div>` : ""}
     <div class="page-heading"><div><h1>${{ overview: "Copilot usage", projects: "Projects", activity: "Activity", about: "Usage details" }[page]}</h1></div><div class="heading-actions"><button class="icon-button expand-button" data-action="open" title="Open full dashboard" aria-label="Open full dashboard">${icon("expand")}</button><button class="icon-button" data-action="refresh" data-focus="refresh" title="Refresh usage" aria-label="Refresh usage">${icon("refresh")}</button></div></div>
-    ${page !== "about" ? `<div class="toolbar">${page === "projects" ? '<span class="toolbar-title">All projects</span>' : `<label class="project-picker">${icon("projects")}<span class="sr-only">Project</span><select id="project" data-focus="project" aria-label="Project"><option value="all">All projects</option>${data.projects.map((p) => `<option value="${h(p.id)}" ${projectId === p.id ? "selected" : ""}>${h(p.name)}</option>`).join("")}</select></label>`}<div class="toolbar-right"><div class="range" role="group" aria-label="Period length">${[7, 14, 30].map((d) => `<button data-focus="days-${d}" data-days="${d}" aria-pressed="${days === d}">${d} days</button>`).join("")}</div><div class="date-nav" role="group" aria-label="Browse calendar history"><button class="date-step" data-shift="previous" data-focus="previous" aria-label="Previous ${days} days" title="Previous ${days} days">‹</button><label class="date-end">${icon("calendar")}<span>Ending</span><input type="date" id="end-date" data-focus="end-date" aria-label="Period end date" value="${h(selectedDate)}" max="${h(today)}"></label><button class="date-step" data-shift="next" data-focus="next" aria-label="Next ${days} days" title="Next ${days} days" ${selectedDate >= today ? "disabled" : ""}>›</button></div><button class="button export" data-action="export" data-focus="export">${icon("download")}Export</button></div></div>` : ""}
+    ${page !== "about" ? `<div class="toolbar">${page === "projects" ? '<span class="toolbar-title">All projects</span>' : `<label class="project-picker">${icon("projects")}<span class="sr-only">Project</span><select id="project" data-focus="project" aria-label="Project"><option value="all">All projects</option>${data.projects.map((p) => `<option value="${h(p.id)}" ${projectId === p.id ? "selected" : ""}>${h(p.name)}</option>`).join("")}</select></label>`}<div class="toolbar-right">${dateControls(today)}<button class="button export" data-action="export" data-focus="export">${icon("download")}Export</button></div></div>` : ""}
     ${data.errors.map((error) => `<div class="notice" role="status">${icon("about")}${h(error)}</div>`).join("")}
     ${!demo && duplicateNames && page !== "about" ? `<div class="notice" role="status">${icon("about")}Projects with the same name may be separate Windows, WSL, container, clone or worktree locations. Their usage stays separate by workspace identity; Hoosage never merges them by name.</div>` : ""}
     ${!demo && data.indexing && page !== "about" ? `<section class="onboarding" aria-busy="true">${icon("activity")}<h2>Indexing saved usage…</h2><p>Reading hoosage's saved project records and local sessions. Totals will appear when the scan is complete.</p></section>` : page === "about" ? about() : page === "projects" ? projects(calls) : page === "activity" ? activity(calls) : overview(calls)}
@@ -204,26 +294,27 @@ function overview(calls: UsageCall[]) {
     <article class="stat"><div class="stat-label">Input tokens ${icon("download")}</div><div class="stat-number">${knownTokenLabel(calls, t.input, "input")}</div><div class="stat-foot">${knownTokenLabel(calls, t.cacheRead, "cacheRead")} cached${calls.some((c) => c.cacheRead === undefined) ? " · partial" : ""}</div></article>
     <article class="stat"><div class="stat-label">Output tokens ${icon("arrow")}</div><div class="stat-number">${knownTokenLabel(calls, t.output, "output")}</div><div class="stat-foot">${calls.some((c) => c.durationMs !== undefined) ? `${(t.avgDurationMs / 1000).toFixed(1)}s avg. timed call` : "No timing data"}</div></article>
   </section>
-  <div class="charts"><section class="card chart-card"><div class="card-heading"><h2>Tokens by day</h2><div class="legend"><span><i class="input-color"></i>Input</span><span><i class="output-color"></i>Output</span></div></div>${chart(calls)}</section><section class="card models-card"><div class="card-heading"><h2>Models</h2><span class="small-tag">Observed share</span></div>${modelMix(calls)}</section></div>
+  <div class="charts"><section class="card chart-card"><div class="card-heading"><h2>Tokens over time</h2><div class="legend"><span><i class="input-color"></i>Input</span><span><i class="output-color"></i>Output</span></div></div>${chart(calls)}</section><section class="card models-card"><div class="card-heading"><h2>Models</h2><span class="small-tag">Observed share</span></div>${modelMix(calls)}</section></div>
   ${projects(calls, true)}
   <div class="coverage-note"><span>${price.estimatedCalls ? "≈ Estimated cost · " : ""}${price.unpricedCalls ? "+ Excludes unpriced usage · " : ""}<button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
 }
 
 function chart(calls: UsageCall[]) {
-  const end = periodEnd(data!.updatedAt, endDate) ?? data!.updatedAt;
-  const points = daily(calls, days, end);
+  const bounds = selectedBounds();
+  const { interval, buckets: points } = usageBuckets(calls, bounds);
   const maximum = Math.max(...points.map((p) => p.tokens), 1);
   const maxLabel = compact(maximum);
   const bars = points
     .map((p, i) => {
-      const x = 52 + i * (650 / days);
-      const width = Math.max(3, 650 / days - 9);
+      const x = 52 + i * (650 / points.length);
+      const width = Math.max(3, 650 / points.length - 9);
       const input = (p.input / maximum) * 154;
       const output = (p.output / maximum) * 154;
-      return `<g class="chart-bar" tabindex="0" role="img" aria-label="${new Date(p.date).toLocaleDateString("en", { month: "short", day: "numeric" })}: ${number(p.input)} input, ${number(p.output)} output tokens${p.missingUsage ? "; incomplete token data" : ""}"><title>${new Date(p.date).toLocaleDateString("en")} · ${number(p.tokens)} observed tokens · ${callCount(p)}</title><rect x="${x}" y="${182 - input}" width="${width}" height="${input}" rx="2" class="bar-input"/><rect x="${x}" y="${182 - input - output}" width="${width}" height="${output}" rx="2" class="bar-output"/>${i === 0 || i === days - 1 || i % Math.ceil(days / 5) === 0 ? `<text x="${x + width / 2}" y="209" text-anchor="middle">${new Date(p.date).toLocaleDateString("en", { month: "short", day: "numeric" })}</text>` : ""}</g>`;
+      const period = rangeLabel(localDateKey(p.start), localDateKey(p.end));
+      return `<g class="chart-bar" tabindex="0" role="img" aria-label="${h(period)}: ${number(p.input)} input, ${number(p.output)} output tokens${p.missingUsage ? "; incomplete token data" : ""}"><title>${h(period)} · ${number(p.tokens)} observed tokens · ${callCount(p)}</title><rect x="${x}" y="${182 - input}" width="${width}" height="${input}" rx="2" class="bar-input"/><rect x="${x}" y="${182 - input - output}" width="${width}" height="${output}" rx="2" class="bar-output"/>${i === 0 || i === points.length - 1 || i % Math.ceil(points.length / 5) === 0 ? `<text x="${x + width / 2}" y="209" text-anchor="middle">${h(dateLabel(localDateKey(p.start), false))}</text>` : ""}</g>`;
     })
     .join("");
-  return `<div class="chart-wrap"><svg class="chart" viewBox="0 0 720 220" role="img" aria-label="Daily input and output token usage for ${days} days ending ${h(localDateKey(end))}"><text x="0" y="31">${maxLabel}</text><text x="0" y="108">${compact(maximum / 2)}</text><text x="20" y="186">0</text><path d="M48 28H710 M48 105H710 M48 182H710" class="gridline"/>${bars}</svg></div>${!calls.length ? '<p class="chart-empty">No calls in this period.</p>' : ""}`;
+  return `<div class="chart-wrap"><svg class="chart" viewBox="0 0 720 220" role="img" aria-label="Input and output tokens from ${h(localDateKey(bounds.start))} to ${h(localDateKey(bounds.end))}, grouped in ${interval}-day intervals"><text x="0" y="31">${maxLabel}</text><text x="0" y="108">${compact(maximum / 2)}</text><text x="20" y="186">0</text><path d="M48 28H710 M48 105H710 M48 182H710" class="gridline"/>${bars}</svg></div><p class="chart-interval">${interval === 1 ? "Daily" : `${interval}-day`} intervals · ${bounds.days} ${bounds.days === 1 ? "day" : "days"} selected</p>${!calls.length ? '<p class="chart-empty">No calls in this period.</p>' : ""}`;
 }
 
 function modelMix(calls: UsageCall[]) {
@@ -295,12 +386,156 @@ function about() {
   <section class="card connection-card"><div><h2>Tracking</h2><p>${demo ? "Preview · Sample data" : h(data!.statusDetail)}</p>${data!.skippedLines ? `<p>${count(data!.skippedLines, "invalid record")} skipped.</p>` : ""}<p>Chat setup applies to all trusted VS Code projects in this profile. Local CLI and JetBrains projects are discovered without setup. Stop tracking before uninstalling to restore the previous Copilot settings.</p></div><div class="connection-actions">${demo ? action("Exit preview", "exitDemo") : data!.status === "reload" ? action("Reload window", "reload", true) : data!.canStopTracking || data!.status === "active" || data!.status === "waiting" ? action("Stop tracking", "disable") : action("Enable Chat tracking once", "enable", true)}<button class="button" data-action="diagnose">Diagnose tracking</button><button class="button" data-action="settings">Settings</button></div></section>`;
 }
 
+function focusCalendarDay() {
+  root
+    .querySelector<HTMLElement>(`[data-focus="calendar-day-${calendarFocusDate}"]`)
+    ?.focus({ preventScroll: true });
+}
+
+function openCalendar(mode: "preset" | "custom" = rangeMode) {
+  const bounds = selectedBounds();
+  draftStartDate = localDateKey(bounds.start);
+  draftEndDate = localDateKey(bounds.end);
+  draftMode = mode;
+  activeBoundary = mode === "custom" ? "start" : "end";
+  calendarMonth = `${draftEndDate.slice(0, 7)}-01`;
+  calendarFocusDate = draftEndDate;
+  calendarOpen = true;
+  render();
+  focusCalendarDay();
+}
+
+function closeCalendar() {
+  calendarOpen = false;
+  render();
+  root.querySelector<HTMLElement>('[data-focus="calendar-trigger"]')?.focus({
+    preventScroll: true,
+  });
+}
+
+function shiftCalendarMonth(months: number, focusKey: string) {
+  const [year, month] = calendarMonth.split("-").map(Number);
+  const next = new Date(year!, month! - 1 + months, 1);
+  const today = localDateKey(data!.updatedAt);
+  const key = localDateKey(next.getTime());
+  if (next.getFullYear() < 100 || key.slice(0, 7) > today.slice(0, 7))
+    return;
+  calendarMonth = key;
+  calendarFocusDate = key;
+  render();
+  root
+    .querySelector<HTMLElement>(`[data-focus="${focusKey}"]`)
+    ?.focus({ preventScroll: true });
+}
+
+function moveCalendarFocus(key: string) {
+  const [year, month, day] = calendarFocusDate.split("-").map(Number);
+  const date = new Date(year!, month! - 1, day!);
+  if (key === "ArrowLeft") date.setDate(date.getDate() - 1);
+  else if (key === "ArrowRight") date.setDate(date.getDate() + 1);
+  else if (key === "ArrowUp") date.setDate(date.getDate() - 7);
+  else if (key === "ArrowDown") date.setDate(date.getDate() + 7);
+  else if (key === "Home") date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+  else if (key === "End") date.setDate(date.getDate() + (6 - ((date.getDay() + 6) % 7)));
+  const today = localDateKey(data!.updatedAt);
+  const target = localDateKey(date.getTime());
+  if (target > today || date.getFullYear() < 100) return;
+  calendarFocusDate = target;
+  calendarMonth = `${target.slice(0, 7)}-01`;
+  render();
+  focusCalendarDay();
+}
+
 root.addEventListener("click", (event) => {
   const button = (event.target as Element).closest<HTMLElement>(
-    "[data-action],[data-page],[data-days],[data-shift],[data-project],[data-session]",
+    "[data-action],[data-page],[data-days],[data-shift],[data-project],[data-session],[data-calendar-action],[data-calendar-nav],[data-calendar-boundary],[data-calendar-day]",
   );
   if (!button) return;
   event.preventDefault();
+  if (
+    button.dataset.calendarAction ||
+    button.dataset.calendarNav ||
+    button.dataset.calendarBoundary ||
+    button.dataset.calendarDay
+  )
+    event.stopPropagation();
+  if (button.dataset.calendarAction === "open") {
+    if (calendarOpen) closeCalendar();
+    else openCalendar();
+    return;
+  }
+  if (button.dataset.calendarAction === "custom") {
+    openCalendar("custom");
+    return;
+  }
+  if (button.dataset.calendarAction === "cancel") {
+    closeCalendar();
+    return;
+  }
+  if (button.dataset.calendarAction === "today") {
+    const today = localDateKey(data!.updatedAt);
+    draftEndDate = today;
+    if (draftMode === "preset")
+      draftStartDate = localDateKey(startOfRange(days, data!.updatedAt));
+    calendarFocusDate = today;
+    calendarMonth = `${today.slice(0, 7)}-01`;
+    render();
+    focusCalendarDay();
+    return;
+  }
+  if (button.dataset.calendarAction === "apply") {
+    if (!customDateBounds(data!.updatedAt, draftStartDate, draftEndDate))
+      return;
+    rangeMode = draftMode;
+    if (rangeMode === "custom") {
+      customStartDate = draftStartDate;
+      customEndDate = draftEndDate;
+    } else {
+      const today = localDateKey(data!.updatedAt);
+      endDate = draftEndDate === today ? undefined : draftEndDate;
+    }
+    visibleSessions = 100;
+    save();
+    closeCalendar();
+    return;
+  }
+  if (button.dataset.calendarNav) {
+    shiftCalendarMonth(Number(button.dataset.calendarNav), button.dataset.focus ?? "");
+    return;
+  }
+  if (button.dataset.calendarBoundary) {
+    activeBoundary = button.dataset.calendarBoundary as "start" | "end";
+    if (activeBoundary === "start") draftMode = "custom";
+    calendarFocusDate = activeBoundary === "start" ? draftStartDate : draftEndDate;
+    calendarMonth = `${calendarFocusDate.slice(0, 7)}-01`;
+    render();
+    root
+      .querySelector<HTMLElement>(`[data-focus="calendar-${activeBoundary}"]`)
+      ?.focus({ preventScroll: true });
+    return;
+  }
+  if (button.dataset.calendarDay) {
+    const chosen = button.dataset.calendarDay;
+    if (chosen > localDateKey(data!.updatedAt)) return;
+    calendarFocusDate = chosen;
+    calendarMonth = `${chosen.slice(0, 7)}-01`;
+    if (activeBoundary === "start") {
+      draftMode = "custom";
+      draftStartDate = chosen;
+      if (draftStartDate > draftEndDate) draftEndDate = chosen;
+      activeBoundary = "end";
+    } else {
+      draftEndDate = chosen;
+      if (draftMode === "custom") {
+        if (draftEndDate < draftStartDate) draftStartDate = chosen;
+      } else {
+        draftStartDate = localDateKey(startOfRange(days, periodEnd(data!.updatedAt, chosen)!));
+      }
+    }
+    render();
+    focusCalendarDay();
+    return;
+  }
   if (button.dataset.page) {
     page = button.dataset.page;
     expandedSession = undefined;
@@ -311,6 +546,12 @@ root.addEventListener("click", (event) => {
   }
   if (button.dataset.days) {
     days = Number(button.dataset.days);
+    if (rangeMode === "custom") {
+      const today = localDateKey(data!.updatedAt);
+      endDate = customEndDate === today ? undefined : customEndDate;
+    }
+    rangeMode = "preset";
+    calendarOpen = false;
     visibleSessions = 100;
     save();
     render();
@@ -318,11 +559,20 @@ root.addEventListener("click", (event) => {
   }
   if (button.dataset.shift) {
     const today = localDateKey(data!.updatedAt);
-    const shifted = shiftLocalDate(
-      endDate ?? today,
-      button.dataset.shift === "previous" ? -days : days,
-    );
-    if (shifted) endDate = shifted >= today ? undefined : shifted;
+    const span = selectedBounds().days;
+    const direction = button.dataset.shift === "previous" ? -1 : 1;
+    if (rangeMode === "custom") {
+      const shiftedEnd = shiftLocalDate(customEndDate, direction * span);
+      const nextEnd = shiftedEnd && shiftedEnd > today ? today : shiftedEnd;
+      if (nextEnd) {
+        customEndDate = nextEnd;
+        customStartDate = shiftLocalDate(nextEnd, 1 - span)!;
+      }
+    } else {
+      const shifted = shiftLocalDate(endDate ?? today, direction * span);
+      if (shifted) endDate = shifted >= today ? undefined : shifted;
+    }
+    calendarOpen = false;
     visibleSessions = 100;
     save();
     render();
@@ -374,7 +624,8 @@ root.addEventListener("click", (event) => {
     send("export", {
       projectId: page === "projects" ? "all" : projectId,
       days,
-      endDate,
+      endDate: rangeMode === "custom" ? customEndDate : endDate,
+      startDate: rangeMode === "custom" ? customStartDate : undefined,
       format: "csv",
     });
     return;
@@ -407,17 +658,52 @@ root.addEventListener("change", (event) => {
     save();
     render();
   }
-  if (select.id === "end-date") {
-    const today = localDateKey(data!.updatedAt);
-    endDate =
-      periodEnd(data!.updatedAt, select.value) === undefined ||
-      select.value === today
-        ? undefined
-        : select.value;
-    visibleSessions = 100;
-    save();
+});
+root.addEventListener("keydown", (event) => {
+  if (!calendarOpen) return;
+  const target = event.target as HTMLElement;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeCalendar();
+    return;
+  }
+  if (!target.dataset.calendarDay) return;
+  if (event.key === "PageUp" || event.key === "PageDown") {
+    event.preventDefault();
+    const direction = event.key === "PageUp" ? -1 : 1;
+    const [year, month, day] = calendarFocusDate.split("-").map(Number);
+    const step = direction * (event.shiftKey ? 12 : 1);
+    const last = new Date(year!, month! + step, 0).getDate();
+    const next = localDateKey(new Date(year!, month! - 1 + step, Math.min(day!, last)).getTime());
+    if (next <= localDateKey(data!.updatedAt)) {
+      calendarFocusDate = next;
+      calendarMonth = `${next.slice(0, 7)}-01`;
+      render();
+      focusCalendarDay();
+    }
+    return;
+  }
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+    event.preventDefault();
+    moveCalendarFocus(event.key);
+  }
+});
+document.addEventListener("click", (event) => {
+  if (
+    calendarOpen &&
+    !(event.target as Element).closest(".date-nav, [data-calendar-action='custom']")
+  ) {
+    calendarOpen = false;
     render();
   }
+});
+root.addEventListener("focusout", () => {
+  queueMicrotask(() => {
+    if (calendarOpen && !root.querySelector(".date-nav")?.contains(document.activeElement)) {
+      calendarOpen = false;
+      render();
+    }
+  });
 });
 window.addEventListener("message", (event) => {
   if (event.data?.type === "snapshot") {
