@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.0 (2026-09-23)
+
+### Features
+
+- **hoosage:** add custom date range calendar (#37) (9f6c58c)
+
 ## 0.10.0 (2026-09-23)
 
 ### Features
