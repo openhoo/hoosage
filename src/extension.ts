@@ -510,12 +510,16 @@ export async function activate(context: vscode.ExtensionContext) {
         : `${remoteLabel} workspace host`;
     return [
       "hoosage tracking diagnostics",
+      `VS Code application: ${vscode.env.appName}`,
       `Extension host: ${location}`,
+      `Extension storage fingerprint: ${storeId}`,
+      `Current project ID: ${current?.id ?? "none"}`,
       `Current project registered here: ${registered ? "yes" : "no"}`,
       `Project record created here: ${registered && Number.isFinite(registered.createdAt) ? new Date(registered.createdAt).toISOString() : "unknown"}`,
       `Saved Chat entries for this project on this host: ${chatCalls.length}`,
       `Saved Chat history file for this project: ${historyFile?.isFile() ? "present" : "missing"}`,
       `Saved Chat history file size: ${historyFile?.isFile() ? `${historyFile.size} bytes` : "unavailable"}`,
+      `Saved Chat history file last modified: ${historyFile?.isFile() ? historyFile.mtime.toISOString() : "unavailable"}`,
       `Saved Chat history bytes read here: ${history?.readBytes ?? 0}`,
       `Saved Chat history complete lines processed here: ${history?.processedLines ?? 0}`,
       `Saved Chat history lines ignored as non-Chat here: ${history?.ignoredLines ?? 0}`,
@@ -526,6 +530,8 @@ export async function activate(context: vscode.ExtensionContext) {
       `Collector reachable here: ${collectorReachable ? "yes" : "no"}`,
       `Tracking status: ${state.status}`,
       `Indexing saved usage: ${state.indexing ? "yes" : "no"}`,
+      `Chat history scan complete here: ${history?.caughtUp ? "yes" : "no"}`,
+      `Local CLI session scan complete here: ${cliScanner.caughtUp ? "yes" : "no"}`,
       ...(remoteUiFallback
         ? [
             `Next step: install Hoosage inside the ${remoteLabel} workspace, then reload.`,

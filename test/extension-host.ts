@@ -132,6 +132,10 @@ export async function run() {
   assert.ok(!JSON.stringify(actual).includes("NEVER_STORE_THIS"));
   const diagnostics = (await api.getDiagnostics()).join("\n");
   assert.ok(diagnostics.includes("Extension host: Local extension host"));
+  assert.ok(
+    diagnostics.includes(`Current project ID: ${process.env.HOOSAGE_TEST_PROJECT_ID}`),
+  );
+  assert.match(diagnostics, /Extension storage fingerprint: [a-f0-9]{24}/);
   assert.ok(diagnostics.includes("Copilot endpoint matches collector: yes"));
   assert.ok(diagnostics.includes("Collector reachable here: yes"));
   assert.ok(
@@ -145,6 +149,8 @@ export async function run() {
   assert.ok(
     diagnostics.includes("Saved Chat history lines ignored as non-Chat here: 0"),
   );
+  assert.ok(diagnostics.includes("Chat history scan complete here: yes"));
+  assert.ok(diagnostics.includes("Local CLI session scan complete here: yes"));
   assert.ok(!diagnostics.includes(process.env.HOOSAGE_TEST_ENDPOINT!));
   assert.ok(!diagnostics.includes("NEVER_STORE_THIS"));
   await vscode.commands.executeCommand("hoosage.open");
