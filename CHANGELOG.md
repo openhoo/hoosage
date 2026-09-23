@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1 (2026-09-23)
+
+### Bug Fixes
+
+- **hoosage:** recover missing local collector connection (#14) (f79b9e7)
+
 ## 0.8.0 (2026-09-23)
 
 ### Features
