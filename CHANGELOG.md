@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.6 (2026-09-23)
+
+### Bug Fixes
+
+- **hoosage:** pre-register previously opened local folders (#30) (32606de)
+
 ## 0.8.5 (2026-09-23)
 
 ### Bug Fixes
