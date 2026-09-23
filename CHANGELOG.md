@@ -18,6 +18,8 @@
 
 - **hoosage:** index local projects automatically (#12) (18c992b)
 
+Scope: this discovers projects from completed local CLI/JetBrains sessions and registers VS Code workspaces when opened with hoosage active. It does not enumerate **File → Open Recent** or reconstruct earlier Chat usage from a closed folder.
+
 ## 0.7.0 (2026-09-23)
 
 ### Features

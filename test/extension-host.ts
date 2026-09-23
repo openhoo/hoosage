@@ -137,6 +137,14 @@ export async function run() {
   assert.ok(
     diagnostics.includes("Saved Chat entries for this project on this host: 2"),
   );
+  assert.match(diagnostics, /Saved Chat history file size: [1-9]\d* bytes/);
+  assert.match(diagnostics, /Saved Chat history bytes read here: [1-9]\d*/);
+  assert.ok(
+    diagnostics.includes("Saved Chat history complete lines processed here: 3"),
+  );
+  assert.ok(
+    diagnostics.includes("Saved Chat history lines ignored as non-Chat here: 0"),
+  );
   assert.ok(!diagnostics.includes(process.env.HOOSAGE_TEST_ENDPOINT!));
   assert.ok(!diagnostics.includes("NEVER_STORE_THIS"));
   await vscode.commands.executeCommand("hoosage.open");

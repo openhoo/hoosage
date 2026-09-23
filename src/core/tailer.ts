@@ -11,6 +11,8 @@ const BATCH = 4 * 1024 * 1024;
 export class UsageTailer {
   readonly calls = new Map<string, UsageCall>();
   skippedLines = 0;
+  ignoredLines = 0;
+  processedLines = 0;
   private offset = 0;
   private inode?: number;
   private decoder = new StringDecoder("utf8");
@@ -23,6 +25,14 @@ export class UsageTailer {
     readonly path: string,
     readonly projectId: string,
   ) {}
+
+  get readBytes(): number {
+    return this.offset;
+  }
+
+  get bufferedBytes(): number {
+    return Buffer.byteLength(this.pending, "utf8");
+  }
 
   async poll(): Promise<void> {
     if (this.busy) return;
@@ -67,12 +77,15 @@ export class UsageTailer {
         continue;
       }
       if (!line.trim()) continue;
+      this.processedLines++;
       if (line.length > MAX_LINE) {
         this.skippedLines++;
         continue;
       }
       try {
-        for (const call of parseLine(line, this.projectId))
+        const calls = parseLine(line, this.projectId);
+        if (!calls.length) this.ignoredLines++;
+        for (const call of calls)
           this.calls.set(call.id, call);
       } catch {
         this.skippedLines++;

@@ -211,6 +211,31 @@ test("incremental reader tolerates partial lines, malformed lines, retries and r
   }
 });
 
+test("history diagnostics distinguish unread bytes, non-Chat lines and invalid lines", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-"));
+  const path = join(dir, "usage.jsonl");
+  try {
+    const pending = JSON.stringify(span()).slice(0, 40);
+    const content =
+      JSON.stringify(span()) +
+      "\n" +
+      JSON.stringify({ scopeMetrics: [] }) +
+      "\n{broken\n" +
+      pending;
+    await writeFile(path, content);
+    const reader = new UsageTailer(path, "a");
+    await reader.poll();
+    assert.equal(reader.calls.size, 1);
+    assert.equal(reader.readBytes, Buffer.byteLength(content));
+    assert.equal(reader.processedLines, 3);
+    assert.equal(reader.ignoredLines, 1);
+    assert.equal(reader.skippedLines, 1);
+    assert.equal(reader.bufferedBytes, Buffer.byteLength(pending));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("oversized lines are skipped without losing the next valid record", async () => {
   const dir = await mkdtemp(join(tmpdir(), "hoosage-"));
   const path = join(dir, "usage.jsonl");

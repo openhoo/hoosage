@@ -284,7 +284,7 @@ export async function activate(context: vscode.ExtensionContext) {
     if (!current || !folders.length)
       return canStopTracking()
         ? "Tracking is enabled for other VS Code windows. Open a project folder to view usage, or stop tracking here."
-        : "Open a project folder to track Copilot Chat. Local CLI and JetBrains sessions are indexed automatically.";
+        : "Open a project folder to track Copilot Chat. Completed local CLI and JetBrains sessions are indexed automatically; File > Open Recent is not scanned.";
     // Newer VS Code builds bundle Copilot without exposing a separate extension
     // object. Feature-detect its registered setting instead of an extension ID.
     if (config().inspect("otlpEndpoint")?.defaultValue === undefined)
@@ -398,7 +398,7 @@ export async function activate(context: vscode.ExtensionContext) {
         : !connected
           ? settingsMismatch
             ? "Copilot telemetry settings do not match the local collector. Run Diagnose Tracking to inspect this window."
-            : "Enable Copilot Chat tracking once for all projects. Local sessions are indexed automatically."
+            : "Enable Copilot Chat tracking once for open projects. Completed local CLI and JetBrains sessions are indexed automatically."
           : currentCalls.length
             ? "Tracking enabled for all open projects. Updates every 5 seconds."
             : remoteName
@@ -495,6 +495,14 @@ export async function activate(context: vscode.ExtensionContext) {
       (call) => call.projectId === current?.id && !call.source,
     );
     const registered = state.projects.find((p) => p.id === current?.id);
+    const history = current ? tailers.get(current.id) : undefined;
+    const historyFile = current
+      ? await stat(capture(current.id)).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT")
+            return undefined;
+          throw error;
+        })
+      : undefined;
     const location = !remoteName
       ? "Local extension host"
       : remoteUiFallback
@@ -506,7 +514,13 @@ export async function activate(context: vscode.ExtensionContext) {
       `Current project registered here: ${registered ? "yes" : "no"}`,
       `Project record created here: ${registered && Number.isFinite(registered.createdAt) ? new Date(registered.createdAt).toISOString() : "unknown"}`,
       `Saved Chat entries for this project on this host: ${chatCalls.length}`,
-      `Saved Chat history file for this project: ${current && (await isStoredFile(capture(current.id))) ? "present" : "missing"}`,
+      `Saved Chat history file for this project: ${historyFile?.isFile() ? "present" : "missing"}`,
+      `Saved Chat history file size: ${historyFile?.isFile() ? `${historyFile.size} bytes` : "unavailable"}`,
+      `Saved Chat history bytes read here: ${history?.readBytes ?? 0}`,
+      `Saved Chat history complete lines processed here: ${history?.processedLines ?? 0}`,
+      `Saved Chat history lines ignored as non-Chat here: ${history?.ignoredLines ?? 0}`,
+      `Saved Chat history invalid lines skipped here: ${history?.skippedLines ?? 0}`,
+      `Saved Chat history bytes awaiting a newline here: ${history?.bufferedBytes ?? 0}`,
       `Collector configuration: ${connection ? "present" : "missing"}`,
       `Copilot endpoint matches collector: ${connection && config().get("otlpEndpoint") === endpoint() ? "yes" : "no"}`,
       `Collector reachable here: ${collectorReachable ? "yes" : "no"}`,
