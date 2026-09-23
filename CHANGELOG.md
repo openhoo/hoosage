@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1 (2026-09-23)
+
+### Bug Fixes
+
+- **hoosage:** keep calendar open for internal focus moves (#42) (d663898)
+
 ## 0.12.0 (2026-09-23)
 
 ### Features
