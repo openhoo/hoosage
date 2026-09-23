@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.5 (2026-09-23)
+
+### Bug Fixes
+
+- **hoosage:** show current project name in tracking diagnostics (#28) (e535b4e)
+
 ## 0.8.4 (2026-09-23)
 
 ### Bug Fixes
