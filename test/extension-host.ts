@@ -11,6 +11,19 @@ export async function run() {
   const initial = await api.getSnapshot();
   assert.equal(initial.currentProjectId, process.env.HOOSAGE_TEST_PROJECT_ID);
   assert.equal(initial.status, "off", initial.statusDetail);
+  assert.ok(
+    initial.projects.some(
+      (project) =>
+        project.id === process.env.HOOSAGE_TEST_AUTO_PROJECT_ID &&
+        project.name === "auto-project",
+    ),
+    "Completed local sessions discover projects without an enable click",
+  );
+  assert.equal(initial.calls.length, 1);
+  assert.equal(
+    initial.calls[0]?.projectId,
+    process.env.HOOSAGE_TEST_AUTO_PROJECT_ID,
+  );
   void vscode.commands.executeCommand("hoosage.enable");
   for (let i = 0; i < 100 && (await api.getSnapshot()).status !== "reload"; i++)
     await new Promise((r) => setTimeout(r, 50));
@@ -26,7 +39,6 @@ export async function run() {
       .inspect("enabled")?.globalValue,
     true,
   );
-  assert.equal(initial.calls.length, 0);
   const now = Date.now() - 5000;
   const payload = {
     resourceSpans: [
@@ -89,11 +101,12 @@ export async function run() {
     assert.equal(response.status, 200);
   }
   const actual = await api.getSnapshot();
-  assert.equal(actual.calls.length, 1, "Duplicate deliveries count once");
-  assert.equal(actual.calls[0]?.input, 1350);
-  assert.equal(actual.calls[0]?.output, 250);
-  assert.equal(costs(actual.calls).usd, 1.23);
-  assert.equal(costs(actual.calls).reportedCalls, 1);
+  const chat = actual.calls.filter((call) => call.source !== "cli");
+  assert.equal(chat.length, 1, "Duplicate deliveries count once");
+  assert.equal(chat[0]?.input, 1350);
+  assert.equal(chat[0]?.output, 250);
+  assert.equal(costs(chat).usd, 1.23);
+  assert.equal(costs(chat).reportedCalls, 1);
   assert.equal(actual.status, "reload");
   assert.ok(!JSON.stringify(actual).includes("NEVER_STORE_THIS"));
   await vscode.commands.executeCommand("hoosage.open");
@@ -132,6 +145,6 @@ export async function run() {
   );
   assert.equal((await api.getSnapshot()).canStopTracking, false);
   console.log(
-    "HOOSAGE_EXTENSION_HOST_OK: activation, project identity, live HTTP ingestion, USD cost, deduplication, privacy, dashboard tab, settings restore",
+    "HOOSAGE_EXTENSION_HOST_OK: automatic project indexing, activation, live HTTP ingestion, USD cost, deduplication, privacy, dashboard tab, settings restore",
   );
 }

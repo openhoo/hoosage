@@ -1,8 +1,7 @@
 import * as vscode from "vscode";
 import { createHash, randomBytes } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { UsageTailer } from "./core/tailer";
 import {
   CliUsageScanner,
@@ -10,6 +9,7 @@ import {
   JETBRAINS_PROJECT_ID,
   folderPathHash,
 } from "./core/cli";
+import { ProjectIndex } from "./core/project-index";
 import { startCollector, type Collector } from "./core/collector";
 import { exportCsv, filterCalls, totals } from "./core/analytics";
 import {
@@ -89,7 +89,8 @@ export async function activate(context: vscode.ExtensionContext) {
     calls: [],
     currentProjectId: current?.id,
     status: "off",
-    statusDetail: "Enable tracking to collect Copilot usage.",
+    statusDetail:
+      "Enable Copilot Chat tracking once for all projects. Local sessions are indexed automatically.",
     updatedAt: Date.now(),
     skippedLines: 0,
     errors: [],
@@ -206,7 +207,7 @@ export async function activate(context: vscode.ExtensionContext) {
     if (!current || !folders.length)
       return canStopTracking()
         ? "Tracking is enabled for other VS Code windows. Open a project folder to view usage, or stop tracking here."
-        : "Open a project folder to enable tracking.";
+        : "Open a project folder to track Copilot Chat. Local CLI and JetBrains sessions are indexed automatically.";
     // Newer VS Code builds bundle Copilot without exposing a separate extension
     // object. Feature-detect its registered setting instead of an extension ID.
     if (config().inspect("otlpEndpoint")?.defaultValue === undefined)
@@ -251,28 +252,9 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     if (current && !projects.some((p) => p.id === current.id))
       projects.unshift(current);
-    const projectByPath = new Map<string, string | undefined>();
-    for (const project of projects)
-      for (const hash of project.pathHashes ?? []) {
-        if (!projectByPath.has(hash)) projectByPath.set(hash, project.id);
-        else if (projectByPath.get(hash) !== project.id)
-          projectByPath.set(hash, undefined);
-      }
-    const resolveCwd = (cwd: string): string | undefined => {
-      let dir = cwd;
-      try {
-        dir = realpathSync(cwd);
-      } catch {}
-      for (;;) {
-        const hash = folderPathHash(dir);
-        if (projectByPath.has(hash)) return projectByPath.get(hash);
-        const parent = dirname(dir);
-        if (parent === dir) return undefined;
-        dir = parent;
-      }
-    };
+    const projectIndex = new ProjectIndex(projects);
     try {
-      await cliScanner.poll(resolveCwd);
+      await cliScanner.poll((cwd) => projectIndex.resolve(cwd));
     } catch {
       errors.push(
         "Could not read Copilot CLI session data. Check storage permissions and refresh.",
@@ -282,6 +264,13 @@ export async function activate(context: vscode.ExtensionContext) {
       ...[...tailers.values()].flatMap((t) => [...t.calls.values()]),
       ...cliScanner.calls.values(),
     ];
+    projects.push(
+      ...projectIndex
+        .projects([...cliScanner.calls.values()])
+        .filter(
+          (project) => !projects.some((known) => known.id === project.id),
+        ),
+    );
     for (const [bucketId, bucketName, kind] of [
       [CLI_PROJECT_ID, "Copilot CLI", "cli"],
       [JETBRAINS_PROJECT_ID, "Copilot (JetBrains)", "jetbrains"],
@@ -320,10 +309,10 @@ export async function activate(context: vscode.ExtensionContext) {
       (needsReload
         ? "Reload VS Code to apply the Copilot exporter settings."
         : !connected
-          ? "Enable tracking to collect Copilot usage."
+          ? "Enable Copilot Chat tracking once for all projects. Local sessions are indexed automatically."
           : currentCalls.length
-            ? "Tracking enabled. Updates every 5 seconds."
-            : "Use Copilot Chat to record usage. Reload VS Code if you just enabled tracking.");
+            ? "Tracking enabled for all open projects. Updates every 5 seconds."
+            : "This project is registered automatically. Use Copilot Chat to record usage; reload if you just enabled tracking.");
     if ([...tailers.values()].some((t) => !t.caughtUp) || !cliScanner.caughtUp)
       errors.push(
         "Reading older local data. Totals will update as indexing completes.",

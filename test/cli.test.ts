@@ -105,8 +105,55 @@ test("shutdown emits delta entries attributed via the resolver", async () => {
     assert.equal(call.requests, 4);
     assert.equal(call.failed, false);
     assert.equal("durationMs" in call, false);
-    // Resolver ran once, lazily, with the raw session cwd.
-    assert.deepEqual(seen, [cwd]);
+    assert.ok(seen.length >= 1 && seen.every((value) => value === cwd));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stored CLI intervals move into newly registered projects without new events", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "sess-move");
+    const first = join(dir, "first");
+    const second = join(dir, "second");
+    await writeFile(
+      file,
+      [
+        start(first),
+        shutdown("e1", "2026-09-22T10:05:00Z", {
+          "gpt-5": metrics(10, 2, 0, 0, 1),
+        }),
+        JSON.stringify({
+          type: "session.resume",
+          data: { context: { cwd: second } },
+        }),
+        shutdown("e2", "2026-09-22T10:06:00Z", {
+          "gpt-5": metrics(20, 4, 0, 0, 2),
+        }),
+      ].join("\n") + "\n",
+    );
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => undefined);
+    assert.deepEqual(
+      [...scanner.calls.values()].map((call) => call.projectId),
+      [CLI_PROJECT_ID, CLI_PROJECT_ID],
+    );
+    await scanner.poll((cwd) =>
+      cwd === first
+        ? "project-first"
+        : cwd === second
+          ? "project-second"
+          : undefined,
+    );
+    assert.equal(
+      scanner.calls.get("cli:sess-move:e1:gpt-5")?.projectId,
+      "project-first",
+    );
+    assert.equal(
+      scanner.calls.get("cli:sess-move:e2:gpt-5")?.projectId,
+      "project-second",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

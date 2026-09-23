@@ -45,7 +45,6 @@ interface FileState {
   pending: string;
   dropping: boolean;
   cwd?: string;
-  projectId?: string;
   /** Event ordinal within this file; disambiguates events lacking an id. */
   seq: number;
   emitted: Set<string>;
@@ -126,6 +125,8 @@ export class CliUsageScanner {
   detected = false;
   private readonly root: string;
   private readonly files = new Map<string, FileState>();
+  /** Local-only cwd for reattributing a session when new workspaces appear. */
+  private readonly callCwds = new Map<string, string>();
   private busy = false;
 
   constructor(root?: string) {
@@ -157,6 +158,22 @@ export class CliUsageScanner {
         if (!entry.isDirectory()) continue;
         if (!(await this.pollFile(entry.name, resolve))) caughtUp = false;
       }
+      for (const [id, cwd] of this.callCwds) {
+        const call = this.calls.get(id);
+        if (call) {
+          let projectId: string | undefined;
+          try {
+            projectId = resolve(cwd);
+          } catch {
+            /* Keep usage unassigned. */
+          }
+          call.projectId =
+            projectId ??
+            (call.source === "jetbrains"
+              ? JETBRAINS_PROJECT_ID
+              : CLI_PROJECT_ID);
+        }
+      }
       this.caughtUp = caughtUp;
     } finally {
       this.busy = false;
@@ -181,7 +198,10 @@ export class CliUsageScanner {
       if (st.inode !== info.ino || info.size < st.offset) {
         // Rotation or truncation: emitted calls and cumulative baselines
         // belong to the old stream and must not survive the reset.
-        for (const id of st.emitted) this.calls.delete(id);
+        for (const id of st.emitted) {
+          this.calls.delete(id);
+          this.callCwds.delete(id);
+        }
         st = freshState();
       }
       st.inode = info.ino;
@@ -202,10 +222,10 @@ export class CliUsageScanner {
           if (st.cwd === undefined && st.workspace.cwd)
             st.cwd = st.workspace.cwd;
           // Re-tag calls emitted before the file appeared.
-          st.projectId = undefined;
           for (const id of st.emitted) {
             const call = this.calls.get(id);
             if (!call) continue;
+            if (!this.callCwds.has(id) && st.cwd) this.callCwds.set(id, st.cwd);
             call.source =
               st.workspace.clientName === JETBRAINS_CLIENT
                 ? "jetbrains"
@@ -283,7 +303,6 @@ export class CliUsageScanner {
       const cwd = record(record(event.data)?.context)?.cwd;
       if (typeof cwd === "string" && cwd !== st.cwd) {
         st.cwd = cwd;
-        st.projectId = undefined;
       }
       return;
     }
@@ -367,14 +386,13 @@ export class CliUsageScanner {
         nanoAiu: delta.nanoAiu,
         failed: false,
       });
+      if (st.cwd) this.callCwds.set(id, st.cwd);
       st.emitted.add(id);
     }
   }
 
-  /** Resolved lazily at emit time; only positive matches are cached, so a
-   * session whose project registers later can still be attributed. */
+  /** Use the current project index; stored intervals are rechecked each poll. */
   private projectIdFor(st: FileState, resolve: Resolve): string {
-    if (st.projectId) return st.projectId;
     const fallback =
       st.workspace?.clientName === JETBRAINS_CLIENT
         ? JETBRAINS_PROJECT_ID
@@ -386,7 +404,6 @@ export class CliUsageScanner {
     } catch {
       projectId = undefined;
     }
-    if (projectId) st.projectId = projectId;
     return projectId ?? fallback;
   }
 }

@@ -20,7 +20,7 @@ Know where your Copilot usage goes, without leaving your editor. hoosage brings 
 1. Download **hoosage.vsix** from this project's release or CI job artifacts.
 2. In VS Code, run **Extensions: Install from VSIX…** and select the file.
 3. Open a project, then run **hoosage: Open Dashboard**.
-4. Click **Enable tracking**, reload the window when prompted, and use Copilot Chat. Setup applies to all VS Code windows; each trusted project is registered separately. Reload other open windows once after initial setup.
+4. Click **Enable Chat tracking once**, reload the window when prompted, and use Copilot Chat. The setting applies to all trusted projects in this VS Code profile. Other already-open windows need one reload after initial setup; newly opened projects register automatically.
 
 Requires VS Code **1.119 or newer**, with Copilot's OpenTelemetry settings available. Copilot must already be configured for actual AI use. The extension works in trusted folder workspaces on desktop VS Code, with real Copilot Pro sessions verified on macOS. Remote SSH, WSL and container hosts have not been verified. It does not run in browser-only VS Code or virtual workspaces.
 
@@ -87,7 +87,7 @@ A project is a VS Code folder workspace, identified by a hash of its full worksp
 
 A saved or multi-root workspace is one **Workspace group**. Copilot's telemetry cannot reliably divide a single request across roots, so hoosage does not invent that precision. Open roots in separate VS Code windows to track them independently.
 
-Copilot CLI sessions are read from `~/.copilot/session-state` (or `$COPILOT_HOME/session-state`) — no setup required. Usage appears after a session ends and is attributed to the tracked workspace matching the session's working directory; sessions outside tracked workspaces or matching more than one workspace group under **Copilot CLI**. Sessions created by the GitHub Copilot plugin for JetBrains IDEs (`client_name: copilot-intellij` in `workspace.yaml`) are labelled JetBrains and group under **Copilot (JetBrains)** when no unambiguous workspace matches.
+Copilot CLI sessions are read from `~/.copilot/session-state` (or `$COPILOT_HOME/session-state`) — no setup required. Completed sessions automatically discover projects from their recorded working directory, including projects never opened in VS Code. Sessions launched in a Git subdirectory group under that Git root; sessions under an already registered workspace use its project group. Missing or ambiguous working directories stay in **Copilot CLI**. Sessions created by the GitHub Copilot plugin for JetBrains IDEs (`client_name: copilot-intellij` in `workspace.yaml`) are labelled JetBrains and follow the same discovery rule; unresolved sessions stay under **Copilot (JetBrains)**. Project names and local path hashes are kept on this host; raw paths and repository URLs are not exported.
 
 ## Local data and settings
 

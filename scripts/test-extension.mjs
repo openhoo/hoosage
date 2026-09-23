@@ -8,8 +8,14 @@ import { createServer } from "node:net";
 const root = resolve(".test-work");
 const profile = join(root, "profile");
 const workspace = join(root, "sample-project");
+const autoProject = join(root, "auto-project");
+const copilotHome = join(root, "copilot-home");
 const uri = pathToFileURL(workspace).toString();
 const id = createHash("sha256").update(uri).digest("hex").slice(0, 24);
+const autoId = createHash("sha256")
+  .update(pathToFileURL(autoProject).toString())
+  .digest("hex")
+  .slice(0, 24);
 const store = join(profile, "User/globalStorage/openhoo.hoosage/projects", id);
 const token = "e".repeat(48);
 const socket = createServer();
@@ -18,6 +24,29 @@ const port = socket.address().port;
 await new Promise((r) => socket.close(r));
 await mkdir(store, { recursive: true });
 await mkdir(join(workspace, ".vscode"), { recursive: true });
+await mkdir(join(autoProject, ".git"), { recursive: true });
+const cliSession = join(copilotHome, "session-state", "auto-project-session");
+await mkdir(cliSession, { recursive: true });
+await writeFile(
+  join(cliSession, "workspace.yaml"),
+  `client_name: copilot-cli\ncwd: ${autoProject}\n`,
+);
+await writeFile(
+  join(cliSession, "events.jsonl"),
+  JSON.stringify({
+    type: "session.shutdown",
+    id: "auto-project-usage",
+    timestamp: new Date(Date.now() - 5_000).toISOString(),
+    data: {
+      modelMetrics: {
+        "local-model": {
+          usage: { inputTokens: 100, outputTokens: 20 },
+          requests: { count: 1 },
+        },
+      },
+    },
+  }) + "\n",
+);
 await writeFile(
   join(store, "../../collector.json"),
   JSON.stringify({ port, token }),
@@ -80,7 +109,9 @@ await runTests({
     "--no-sandbox",
   ],
   extensionTestsEnv: {
+    COPILOT_HOME: copilotHome,
     HOOSAGE_TEST_PROJECT_ID: id,
+    HOOSAGE_TEST_AUTO_PROJECT_ID: autoId,
     HOOSAGE_TEST_ENDPOINT: `http://127.0.0.1:${port}/${token}`,
   },
 });

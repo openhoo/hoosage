@@ -57,7 +57,7 @@
       },
       {
         "command": "hoosage.enable",
-        "title": "Enable Tracking",
+        "title": "Enable Chat Tracking for All Projects",
         "category": "hoosage"
       },
       {
