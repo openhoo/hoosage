@@ -845,9 +845,6 @@ footer svg {
 .notice {
   justify-content: flex-start;
 }
-.setup-notice {
-  justify-content: space-between;
-}
 .toast {
   position: fixed;
   bottom: 25px;

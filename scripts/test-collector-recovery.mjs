@@ -6,7 +6,10 @@ import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { createServer } from "node:net";
 
-const root = resolve(".test-work/collector-recovery");
+const scenario = ["mismatch", "missing-history"].includes(process.argv[2])
+  ? process.argv[2]
+  : "missing";
+const root = resolve(`.test-work/collector-recovery-${scenario}`);
 const profile = join(root, "profile");
 const workspace = join(root, "project");
 const id = createHash("sha256")
@@ -55,28 +58,37 @@ await writeFile(
     createdAt: Date.now(),
   }),
 );
-await writeFile(
-  join(
-    profile,
-    "User/globalStorage/openhoo.hoosage/projects",
-    id,
-    "copilot.jsonl",
-  ),
-  JSON.stringify({
-    traceId: "c".repeat(32),
-    spanId: "d".repeat(16),
-    startTimeUnixNano: String(BigInt(Date.now() - 2000) * 1_000_000n),
-    endTimeUnixNano: String(BigInt(Date.now() - 1000) * 1_000_000n),
-    attributes: {
-      "gen_ai.operation.name": "chat",
-      "gen_ai.request.model": "Existing model",
-      "gen_ai.usage.input_tokens": 11,
-      "gen_ai.usage.output_tokens": 3,
-    },
-  }) + "\n",
-);
-// Deliberately omit collector.json: the installed extension is configured, but
-// no server can bind the endpoint after a profile migration or lost storage.
+if (scenario !== "missing-history")
+  await writeFile(
+    join(
+      profile,
+      "User/globalStorage/openhoo.hoosage/projects",
+      id,
+      "copilot.jsonl",
+    ),
+    JSON.stringify({
+      traceId: "c".repeat(32),
+      spanId: "d".repeat(16),
+      startTimeUnixNano: String(BigInt(Date.now() - 2000) * 1_000_000n),
+      endTimeUnixNano: String(BigInt(Date.now() - 1000) * 1_000_000n),
+      attributes: {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "Existing model",
+        "gen_ai.usage.input_tokens": 11,
+        "gen_ai.usage.output_tokens": 3,
+      },
+    }) + "\n",
+  );
+// Reproduce either lost storage or a stale file after a collector restart.
+// Both previously left VS Code pointing at an endpoint with no listener.
+if (scenario === "mismatch")
+  await writeFile(
+    join(profile, "User/globalStorage/openhoo.hoosage/collector.json"),
+    JSON.stringify({
+      port: port === 1024 ? 1025 : port - 1,
+      token: "e".repeat(48),
+    }),
+  );
 await build({
   entryPoints: ["test/extension-recovery-host.ts"],
   bundle: true,
@@ -111,5 +123,6 @@ await runTests({
     HOOSAGE_TEST_PROJECT_ID: id,
     HOOSAGE_TEST_ENDPOINT: endpoint,
     HOOSAGE_TEST_STORAGE: join(profile, "User/globalStorage/openhoo.hoosage"),
+    HOOSAGE_TEST_MISSING_HISTORY: String(scenario === "missing-history"),
   },
 });

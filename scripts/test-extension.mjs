@@ -1,6 +1,6 @@
 import { runTests } from "@vscode/test-electron";
 import { build } from "esbuild";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -22,6 +22,8 @@ const socket = createServer();
 await new Promise((r) => socket.listen(0, "127.0.0.1", r));
 const port = socket.address().port;
 await new Promise((r) => socket.close(r));
+await rm(profile, { recursive: true, force: true });
+await rm(copilotHome, { recursive: true, force: true });
 await mkdir(store, { recursive: true });
 await mkdir(join(workspace, ".vscode"), { recursive: true });
 await mkdir(join(autoProject, ".git"), { recursive: true });
@@ -58,10 +60,24 @@ await writeFile(
     name: "sample-project",
     kind: "folder",
     folderCount: 1,
-    createdAt: Date.now(),
+    createdAt: 1_700_000_000_000,
   }),
 );
-await writeFile(join(store, "copilot.jsonl"), "");
+await writeFile(
+  join(store, "copilot.jsonl"),
+  JSON.stringify({
+    traceId: "c".repeat(32),
+    spanId: "d".repeat(16),
+    startTimeUnixNano: String(BigInt(Date.now() - 2000) * 1_000_000n),
+    endTimeUnixNano: String(BigInt(Date.now() - 1000) * 1_000_000n),
+    attributes: {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.request.model": "Prior version model",
+      "gen_ai.usage.input_tokens": 77,
+      "gen_ai.usage.output_tokens": 8,
+    },
+  }) + "\n",
+);
 await mkdir(join(profile, "User"), { recursive: true });
 await writeFile(
   join(profile, "User/settings.json"),
@@ -113,5 +129,7 @@ await runTests({
     HOOSAGE_TEST_PROJECT_ID: id,
     HOOSAGE_TEST_AUTO_PROJECT_ID: autoId,
     HOOSAGE_TEST_ENDPOINT: `http://127.0.0.1:${port}/${token}`,
+    HOOSAGE_TEST_CAPTURE: join(store, "copilot.jsonl"),
+    HOOSAGE_TEST_PROJECT_RECORD: join(store, "project.json"),
   },
 });

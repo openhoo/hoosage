@@ -12,11 +12,21 @@ export async function run() {
   };
   const snapshot = await api.getSnapshot();
   assert.equal(snapshot.currentProjectId, process.env.HOOSAGE_TEST_PROJECT_ID);
-  assert.equal(snapshot.status, "active", snapshot.statusDetail);
-  assert.equal(
-    snapshot.calls.find((call) => call.model === "Existing model")?.input,
-    11,
-  );
+  if (process.env.HOOSAGE_TEST_MISSING_HISTORY === "true") {
+    assert.equal(snapshot.status, "waiting", snapshot.statusDetail);
+    assert.ok(
+      snapshot.errors.some((error) =>
+        error.includes("Saved Chat history is missing"),
+      ),
+      "Missing history is reported instead of silently creating an empty file",
+    );
+  } else {
+    assert.equal(snapshot.status, "active", snapshot.statusDetail);
+    assert.equal(
+      snapshot.calls.find((call) => call.model === "Existing model")?.input,
+      11,
+    );
+  }
   assert.equal(snapshot.canStopTracking, true);
   const connection = JSON.parse(
     await readFile(

@@ -154,9 +154,19 @@ export class CliUsageScanner {
       }
       const entries = await readdir(this.root, { withFileTypes: true });
       let caughtUp = true;
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        if (!(await this.pollFile(entry.name, resolve))) caughtUp = false;
+      const sessions = entries.filter((entry) => entry.isDirectory());
+      for (let start = 0; start < sessions.length; start += 16) {
+        const batch = await Promise.allSettled(
+          sessions
+            .slice(start, start + 16)
+            .map((entry) => this.pollFile(entry.name, resolve)),
+        );
+        const failed = batch.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+        if (
+          batch.some((result) => result.status === "fulfilled" && !result.value)
+        )
+          caughtUp = false;
       }
       for (const [id, cwd] of this.callCwds) {
         const call = this.calls.get(id);

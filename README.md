@@ -7,7 +7,7 @@
 
 ![Dark dashboard with USD costs, token trends, model usage and project comparisons — sample data](media/dashboard.png)
 
-*Dark overview. All screenshots show the current dashboard with labelled sample data.*
+_Dark overview. All screenshots show the current dashboard with labelled sample data._
 
 Know where your Copilot usage goes, without leaving your editor. hoosage brings project comparisons, token trends, model breakdowns and session activity into a calm, responsive dashboard and a compact sidebar.
 
@@ -22,7 +22,7 @@ Know where your Copilot usage goes, without leaving your editor. hoosage brings 
 3. Open a project, then run **hoosage: Open Dashboard**.
 4. Click **Enable Chat tracking once**, reload the window when prompted, and use Copilot Chat. The setting applies to all trusted projects in this VS Code profile. Other already-open windows need one reload after initial setup; newly opened projects register automatically.
 
-Requires VS Code **1.119 or newer**, with Copilot's OpenTelemetry settings available. Copilot must already be configured for actual AI use. The extension works in trusted folder workspaces on desktop VS Code, with real Copilot Pro sessions verified on macOS. Remote SSH, WSL and container hosts have not been verified. It does not run in browser-only VS Code or virtual workspaces.
+Requires VS Code **1.119 or newer**, with Copilot's OpenTelemetry settings available. Copilot must already be configured for actual AI use. The extension works in trusted folder workspaces on desktop VS Code, with real Copilot Pro sessions verified on macOS. Remote SSH, WSL and container Chat delivery have not been verified. It does not run in browser-only VS Code or virtual workspaces. In a remote window, install hoosage on the remote workspace host as described below.
 
 Want a look first? **Explore a preview** shows clearly labelled sample data. Samples never enter your usage history or exports.
 
@@ -83,7 +83,7 @@ USD represents usage value. Subscription fees, included allowances, discounts, t
 
 ## Project attribution
 
-A project is a VS Code folder workspace, identified by a hash of its full workspace URI. All windows share an authenticated local collector. Each extension host registers its `vscode.env.sessionId` against that workspace; incoming OTLP resource `session.id` selects the registered project. Unknown windows are discarded, never assigned to the active editor. Registrations cannot be rebound to another workspace. Identically named folders, clones and worktrees remain separate. All registered projects on the same host and profile can be compared.
+A project is a VS Code folder workspace, identified by a hash of its full workspace URI. All windows share an authenticated local collector. Each extension host registers its `vscode.env.sessionId` against that workspace; incoming OTLP resource `session.id` selects the registered project. Unknown windows are discarded, never assigned to the active editor. Registrations cannot be rebound to another workspace. Identically named folders, clones and worktrees remain separate. A Windows `file://` workspace and a WSL `vscode-remote://` workspace have different identities, even if their folder names match; hoosage shows this distinction in the dashboard and does not merge by name. All registered projects on the same host and profile can be compared.
 
 A saved or multi-root workspace is one **Workspace group**. Copilot's telemetry cannot reliably divide a single request across roots, so hoosage does not invent that precision. Open roots in separate VS Code windows to track them independently.
 
@@ -105,7 +105,15 @@ On explicit setup, hoosage changes these **user-level** Copilot settings:
 
 The listener binds only to `127.0.0.1`. It accepts OTLP JSON/protobuf and gzip, requires a random collector URL token, rejects browser-origin requests and limits request size. Metrics and logs are acknowledged and discarded. Only completed `chat` spans are retained, after an explicit allowlist removes prompts, responses, code, tool arguments, repository URLs and other attributes.
 
-History lives under `globalStorageUri/projects/<workspace-hash>/`; shared collector configuration and hashed window registrations live alongside `projects/`, outside your repository. VS Code 1.138 restricts these Copilot settings to application scope. Setup therefore uses user settings, without writing secrets into project files. Local desktop VS Code is verified; separate profiles and remote hosts must not share another host's endpoint. Telemetry environment overrides and enterprise policy conflicts are reported instead of silently redirecting them. VS Code's global telemetry-off preference is respected; it also disables Copilot's local OTel exporter upstream.
+History lives under `globalStorageUri/projects/<workspace-hash>/`; shared collector configuration and hashed window registrations live alongside `projects/`, outside your repository. Opening the same workspace after an update retains the project record and appends to the existing usage file. Each VS Code profile and extension host has separate storage; opening a remote workspace or a different profile does not migrate local history. If a previously registered project has lost its Chat history file on this host, hoosage reports that condition instead of silently creating an empty replacement. **hoosage: Diagnose Tracking** reports host location, project age, saved-entry count, endpoint match and collector health without printing the endpoint or token.
+
+Saved usage is indexed in the background when the extension starts. The dashboard and status bar show an indexing state until totals are complete; large local histories are read in bounded batches without delaying extension activation.
+
+VS Code 1.138 restricts these Copilot settings to application scope. Setup therefore uses user settings, without writing secrets into project files. When the configured Hoosage endpoint and `collector.json` differ, startup rebinds the configured local endpoint; foreign destinations are never adopted. Local desktop VS Code is verified; separate profiles and remote hosts must not share another host's endpoint. Telemetry environment overrides and enterprise policy conflicts are reported instead of silently redirecting them. VS Code's global telemetry-off preference is respected; it also disables Copilot's local OTel exporter upstream.
+
+### WSL and Dev Containers
+
+VS Code can run extensions on the local UI host or the [remote workspace host](https://code.visualstudio.com/api/advanced-topics/remote-extensions). In a WSL or Dev Container window, install hoosage **in that remote environment** and reload. If only the local copy is present, hoosage displays an actionable blocked state and **Diagnose Tracking** explains which host is running. A reachable collector on a remote host alone does not prove that Copilot Chat sends spans to that host: make one real Chat request and check whether the saved Chat-entry count increases. If it does not, remote Chat delivery is not yet supported for that host arrangement; use a local workspace for verified tracking. Hoosage never copies usage between local, WSL and container storage automatically.
 
 **Stop tracking before uninstalling.** Run **hoosage: Stop Tracking** and reload all open windows to restore the previous user values. This stops collection for all projects in this VS Code configuration. Settings changed by you after setup are preserved. Stopping keeps your history. To delete history, stop tracking, reload, and delete the corresponding project directory from hoosage global storage. No automatic retention/rotation is performed in this first release; the sanitized JSONL file grows with usage.
 

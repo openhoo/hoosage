@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import type { Snapshot } from "../src/core/types";
 import { costs } from "../src/core/pricing";
 export async function run() {
@@ -7,6 +8,7 @@ export async function run() {
   assert.ok(extension, "Extension is installed in the development host");
   const api = (await extension.activate()) as {
     getSnapshot(): Promise<Snapshot>;
+    getDiagnostics(): Promise<string[]>;
   };
   const initial = await api.getSnapshot();
   assert.equal(initial.currentProjectId, process.env.HOOSAGE_TEST_PROJECT_ID);
@@ -19,10 +21,21 @@ export async function run() {
     ),
     "Completed local sessions discover projects without an enable click",
   );
-  assert.equal(initial.calls.length, 1);
+  assert.equal(initial.calls.length, 2);
   assert.equal(
-    initial.calls[0]?.projectId,
+    initial.calls.find((call) => call.source === "cli")?.projectId,
     process.env.HOOSAGE_TEST_AUTO_PROJECT_ID,
+  );
+  assert.equal(
+    initial.calls.find((call) => call.model === "Prior version model")?.input,
+    77,
+    "Activation preserves saved usage from a previous version",
+  );
+  assert.equal(
+    JSON.parse(await readFile(process.env.HOOSAGE_TEST_PROJECT_RECORD!, "utf8"))
+      .createdAt,
+    1_700_000_000_000,
+    "Activation preserves the original project record",
   );
   void vscode.commands.executeCommand("hoosage.enable");
   for (let i = 0; i < 100 && (await api.getSnapshot()).status !== "reload"; i++)
@@ -101,14 +114,31 @@ export async function run() {
     assert.equal(response.status, 200);
   }
   const actual = await api.getSnapshot();
-  const chat = actual.calls.filter((call) => call.source !== "cli");
+  const chat = actual.calls.filter(
+    (call) => call.model === "Integration model",
+  );
   assert.equal(chat.length, 1, "Duplicate deliveries count once");
+  assert.ok(
+    (await readFile(process.env.HOOSAGE_TEST_CAPTURE!, "utf8")).includes(
+      "Prior version model",
+    ),
+    "New usage appends without clearing old history",
+  );
   assert.equal(chat[0]?.input, 1350);
   assert.equal(chat[0]?.output, 250);
   assert.equal(costs(chat).usd, 1.23);
   assert.equal(costs(chat).reportedCalls, 1);
   assert.equal(actual.status, "reload");
   assert.ok(!JSON.stringify(actual).includes("NEVER_STORE_THIS"));
+  const diagnostics = (await api.getDiagnostics()).join("\n");
+  assert.ok(diagnostics.includes("Extension host: Local extension host"));
+  assert.ok(diagnostics.includes("Copilot endpoint matches collector: yes"));
+  assert.ok(diagnostics.includes("Collector reachable here: yes"));
+  assert.ok(
+    diagnostics.includes("Saved Chat entries for this project on this host: 2"),
+  );
+  assert.ok(!diagnostics.includes(process.env.HOOSAGE_TEST_ENDPOINT!));
+  assert.ok(!diagnostics.includes("NEVER_STORE_THIS"));
   await vscode.commands.executeCommand("hoosage.open");
   for (
     let attempt = 0;

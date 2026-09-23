@@ -36,7 +36,8 @@
   "homepage": "https://github.com/openhoo/hoosage#readme",
   "main": "./dist/extension.cjs",
   "extensionKind": [
-    "workspace"
+    "workspace",
+    "ui"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -70,6 +71,11 @@
         "title": "Refresh Usage",
         "category": "hoosage",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "hoosage.diagnose",
+        "title": "Diagnose Tracking",
+        "category": "hoosage"
       },
       {
         "command": "hoosage.export",
@@ -128,7 +134,7 @@
     "vscode:prepublish": "npm run build",
     "package": "vsce package --no-dependencies --baseContentUrl https://github.com/openhoo/hoosage/blob/main --baseImagesUrl https://github.com/openhoo/hoosage/raw/main --out hoosage.vsix",
     "preview": "node scripts/preview.mjs",
-    "test:extension": "node scripts/test-extension.mjs && node scripts/test-collector-recovery.mjs"
+    "test:extension": "node scripts/test-extension.mjs && node scripts/test-collector-recovery.mjs && node scripts/test-collector-recovery.mjs mismatch && node scripts/test-collector-recovery.mjs missing-history"
   },
   "devDependencies": {
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",

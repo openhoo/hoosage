@@ -88,6 +88,8 @@ export interface CollectorConfig {
   token: string;
   projectId: string;
   file: string;
+  /** Opaque identifier of the local extension storage, never a raw path. */
+  storeId?: string;
   route?: (
     sessionId: string,
   ) => Promise<{ projectId: string; file: string } | undefined>;
@@ -95,6 +97,16 @@ export interface CollectorConfig {
 export interface Collector {
   close(): Promise<void>;
   port: number;
+}
+
+export function isOwnCollectorHealth(value: unknown, storeId: string): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const health = value as Record<string, unknown>;
+  return (
+    health.projectId === "host" &&
+    health.protocol === 2 &&
+    health.storeId === storeId
+  );
 }
 
 /** An authenticated loopback OTLP/HTTP endpoint with optional window routing. Browser-origin
@@ -114,6 +126,7 @@ export async function startCollector(
         JSON.stringify({
           projectId: config.projectId,
           protocol: config.route ? 2 : 1,
+          storeId: config.storeId,
         }),
       );
       return;

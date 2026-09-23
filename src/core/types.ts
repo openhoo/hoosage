@@ -44,6 +44,8 @@ export interface Snapshot {
   updatedAt: number;
   skippedLines: number;
   errors: string[];
+  /** True while stored usage is still being read; totals are not final yet. */
+  indexing?: boolean;
   demo?: boolean;
 }
 

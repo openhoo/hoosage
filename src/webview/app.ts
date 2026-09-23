@@ -125,6 +125,13 @@ function render() {
   if (projectId !== "all" && !data.projects.some((p) => p.id === projectId))
     projectId = "all";
   const calls = selectedCalls();
+  const nameCounts = new Map<string, number>();
+  for (const project of data.projects) {
+    if (project.kind === "cli" || project.kind === "jetbrains") continue;
+    const name = project.name.toLocaleLowerCase();
+    nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+  }
+  const duplicateNames = [...nameCounts.values()].some((count) => count > 1);
   root.removeAttribute("aria-busy");
   root.innerHTML = `
     <aside class="rail"><a class="brand" href="#overview" data-page="overview" aria-label="hoosage overview">${mark}<span>hoosage<span class="brand-dot">.</span></span></a>
@@ -144,7 +151,8 @@ function render() {
     <div class="page-heading"><div><h1>${{ overview: "Copilot usage", projects: "Projects", activity: "Activity", about: "Usage details" }[page]}</h1></div><div class="heading-actions"><button class="icon-button expand-button" data-action="open" title="Open full dashboard" aria-label="Open full dashboard">${icon("expand")}</button><button class="icon-button" data-action="refresh" data-focus="refresh" title="Refresh usage" aria-label="Refresh usage">${icon("refresh")}</button></div></div>
     ${page !== "about" ? `<div class="toolbar"><label class="project-picker">${icon("projects")}<span class="sr-only">Project</span><select id="project" data-focus="project" aria-label="Project"><option value="all">All projects</option>${data.projects.map((p) => `<option value="${h(p.id)}" ${projectId === p.id ? "selected" : ""}>${h(p.name)}</option>`).join("")}</select></label><div class="toolbar-right"><div class="range" role="group" aria-label="Date range">${[7, 14, 30].map((d) => `<button data-focus="days-${d}" data-days="${d}" aria-pressed="${days === d}">${d} days</button>`).join("")}</div><button class="button export" data-action="export" data-focus="export">${icon("download")}Export</button></div></div>` : ""}
     ${data.errors.map((error) => `<div class="notice" role="status">${icon("about")}${h(error)}</div>`).join("")}
-    ${page === "about" ? about() : page === "projects" ? projects(calls) : page === "activity" ? activity(calls) : overview(calls)}
+    ${!demo && duplicateNames && page !== "about" ? `<div class="notice" role="status">${icon("about")}Projects with the same name may be separate Windows, WSL, container, clone or worktree locations. Their usage stays separate by workspace identity; Hoosage never merges them by name.</div>` : ""}
+    ${!demo && data.indexing && page !== "about" ? `<section class="onboarding" aria-busy="true">${icon("activity")}<h2>Indexing saved usage…</h2><p>Reading local project and session history. Totals will appear when the scan is complete.</p></section>` : page === "about" ? about() : page === "projects" ? projects(calls) : page === "activity" ? activity(calls) : overview(calls)}
 
     </main></div><div class="toast" role="status" aria-live="polite">${h(toast)}</div>`;
   if (focusKey)
@@ -158,11 +166,6 @@ function overview(calls: UsageCall[]) {
   if (!data) return "";
   const t = totals(calls);
   const price = costs(calls);
-  const needsSetup =
-    !demo &&
-    (data.status === "off" ||
-      data.status === "blocked" ||
-      data.status === "reload");
   const allEmpty = data.calls.length === 0;
   const setupAction =
     data.status === "reload"
@@ -173,9 +176,8 @@ function overview(calls: UsageCall[]) {
           ? action("Refresh usage", "refresh", true)
           : action("Enable Chat tracking once", "enable", true);
   if (allEmpty)
-    return `<section class="onboarding">${icon("activity")}<h2>${data.status === "waiting" ? "No usage yet" : data.status === "reload" ? "Reload required" : data.status === "blocked" ? "Tracking unavailable" : "Tracking is off"}</h2><p>${h(data.statusDetail)}</p><div class="onboarding-actions">${setupAction}<button class="button" data-action="demo">Preview ${icon("arrow")}</button></div></section><div class="coverage-note"><span>Tracking starts after setup and reload. <button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
-  return `${needsSetup ? `<div class="notice setup-notice"><span>${h(data.statusDetail)}</span>${setupAction}</div>` : ""}
-  <section class="stats" aria-label="Usage summary">
+    return `<section class="onboarding">${icon("activity")}<h2>${data.status === "waiting" ? "No usage yet" : data.status === "reload" ? "Reload required" : data.status === "blocked" ? "Tracking unavailable" : "Tracking is off"}</h2><p>${h(data.statusDetail)}</p><div class="onboarding-actions">${setupAction}<button class="button" data-action="diagnose">Diagnose tracking</button><button class="button" data-action="demo">Preview ${icon("arrow")}</button></div></section><div class="coverage-note"><span>Tracking starts after setup and reload. <button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
+  return `<section class="stats" aria-label="Usage summary">
     <article class="stat featured cost-stat"><div class="stat-label">Usage cost <span class="currency-tag">USD</span></div><div class="stat-number" title="${h(costDescription(price))}">${h(costLabel(price))}</div><div class="stat-foot">${price.unpricedCalls ? count(price.unpricedCalls, "unpriced entry") : price.estimatedCalls ? "Includes estimates" : price.reportedCalls ? "Reported by Copilot" : "No cost data"}</div></article>
     <article class="stat"><div class="stat-label">Tokens ${icon("bolt")}</div><div class="stat-number">${knownTokenLabel(calls, t.tokens, "total")}</div><div class="stat-foot">${t.missingUsage ? `${count(t.missingUsage, "entry")} missing token data` : "Input + output"}</div></article>
     <article class="stat"><div class="stat-label">Model calls ${icon("activity")}</div><div class="stat-number" title="${h(callCount(t))}">${measuredCalls(t)}</div><div class="stat-foot">${count(t.sessions, "session")}${t.missingRequests ? " · Partial count" : ""}</div></article>
@@ -267,9 +269,9 @@ function activity(calls: UsageCall[]) {
 }
 
 function about() {
-  return `<div class="about-grid"><section class="card about-card"><h2>Stored data</h2><p>Model names, tokens, costs, timing and session IDs are stored on the extension host. Prompts, responses, code and tool arguments are excluded.</p></section><section class="card about-card"><h2>Projects</h2><p>Trusted VS Code workspaces register automatically after one-time Chat setup. Clones and worktrees count separately. Multi-root workspaces count as one workspace group.</p><p>Completed local CLI and JetBrains sessions discover projects by their recorded working directory, even if those projects were never opened in VS Code. Ambiguous locations stay unassigned.</p></section><section class="card about-card"><h2>Token counts</h2><p>Completed Copilot Chat calls are deduplicated; missing values stay unknown. Cache reads are part of input tokens. Inline completions and usage on other hosts are excluded.</p><p>Copilot CLI session-state entries summarize model requests and appear after a CLI session ends.</p></section><section class="card about-card"><h2>History</h2><p>Chat collection starts after setup and reload; earlier Chat usage is unavailable. Existing CLI session-state history on this host is read separately. Stopping tracking keeps your history.</p><p>To delete history, stop tracking, reload, then delete hoosage’s project storage.</p></section></div>
+  return `<div class="about-grid"><section class="card about-card"><h2>Stored data</h2><p>Model names, tokens, costs, timing and session IDs are stored on the extension host. Prompts, responses, code and tool arguments are excluded.</p></section><section class="card about-card"><h2>Projects</h2><p>Trusted VS Code workspaces register automatically after one-time Chat setup. Clones and worktrees count separately. Multi-root workspaces count as one workspace group.</p><p>Completed local CLI and JetBrains sessions discover projects by their recorded working directory, even if those projects were never opened in VS Code. Ambiguous locations stay unassigned. Windows, WSL and container paths remain separate workspace identities, even when names match.</p></section><section class="card about-card"><h2>Token counts</h2><p>Completed Copilot Chat calls are deduplicated; missing values stay unknown. Cache reads are part of input tokens. Inline completions and usage on other hosts are excluded.</p><p>Copilot CLI session-state entries summarize model requests and appear after a CLI session ends.</p></section><section class="card about-card"><h2>History</h2><p>Chat collection starts after setup and reload; earlier Chat usage is unavailable. Existing CLI session-state history on this host is read separately. Stopping tracking keeps your history.</p><p>To delete history, stop tracking, reload, then delete hoosage’s project storage.</p></section></div>
   <section class="card pricing-details"><h2>Costs in USD</h2><p>Reported Copilot credits take priority: 1 credit = $0.01. ≈ marks an estimate; + marks a subtotal with unpriced usage.</p><p>Estimates use the <a href="${PRICING_SOURCE}">Copilot price table</a> from ${PRICING_DATE}, including cache rates and long-context tiers. These rates also apply to older calls. Missing cache details are assumed zero. Unknown models, incomplete token counts and CLI aggregates that could cross long-context tiers stay unpriced.</p><p>Usage value excludes subscription fees, allowances, discounts and taxes. It is not your bill.</p><p class="pricing-coverage">${h(costDescription(costs(selectedCalls())))}</p></section>
-  <section class="card connection-card"><div><h2>Tracking</h2><p>${demo ? "Preview · Sample data" : h(data!.statusDetail)}</p>${data!.skippedLines ? `<p>${count(data!.skippedLines, "invalid record")} skipped.</p>` : ""}<p>Chat setup applies to all trusted VS Code projects in this profile. Local CLI and JetBrains projects are discovered without setup. Stop tracking before uninstalling to restore the previous Copilot settings.</p></div><div class="connection-actions">${demo ? action("Exit preview", "exitDemo") : data!.status === "reload" ? action("Reload window", "reload", true) : data!.canStopTracking || data!.status === "active" || data!.status === "waiting" ? action("Stop tracking", "disable") : action("Enable Chat tracking once", "enable", true)}<button class="button" data-action="settings">Settings</button></div></section>`;
+  <section class="card connection-card"><div><h2>Tracking</h2><p>${demo ? "Preview · Sample data" : h(data!.statusDetail)}</p>${data!.skippedLines ? `<p>${count(data!.skippedLines, "invalid record")} skipped.</p>` : ""}<p>Chat setup applies to all trusted VS Code projects in this profile. Local CLI and JetBrains projects are discovered without setup. Stop tracking before uninstalling to restore the previous Copilot settings.</p></div><div class="connection-actions">${demo ? action("Exit preview", "exitDemo") : data!.status === "reload" ? action("Reload window", "reload", true) : data!.canStopTracking || data!.status === "active" || data!.status === "waiting" ? action("Stop tracking", "disable") : action("Enable Chat tracking once", "enable", true)}<button class="button" data-action="diagnose">Diagnose tracking</button><button class="button" data-action="settings">Settings</button></div></section>`;
 }
 
 root.addEventListener("click", (event) => {

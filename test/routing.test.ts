@@ -11,7 +11,32 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { OTLPTraceExporter as JsonExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPTraceExporter as ProtoExporter } from "@opentelemetry/exporter-trace-otlp-proto";
 import { registerWindow, routeWindow } from "../src/core/routing";
-import { startCollector } from "../src/core/collector";
+import { isOwnCollectorHealth, startCollector } from "../src/core/collector";
+
+test("collector health rejects another profile even with the same endpoint token", async () => {
+  const collector = await startCollector({
+    port: 0,
+    token: "test-secret",
+    projectId: "host",
+    file: "",
+    storeId: "profile-a",
+    route: async () => undefined,
+  });
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${collector.port}/test-secret/health`,
+    );
+    const health = await response.json();
+    assert.equal(isOwnCollectorHealth(health, "profile-a"), true);
+    assert.equal(isOwnCollectorHealth(health, "profile-b"), false);
+    assert.equal(
+      isOwnCollectorHealth({ projectId: "host", protocol: 2 }, "profile-a"),
+      false,
+    );
+  } finally {
+    await collector.close();
+  }
+});
 
 for (const [name, Exporter] of [
   ["JSON", JsonExporter],

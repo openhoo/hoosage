@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { UsageTailer } from "./core/tailer";
 import {
@@ -10,7 +10,11 @@ import {
   folderPathHash,
 } from "./core/cli";
 import { ProjectIndex } from "./core/project-index";
-import { startCollector, type Collector } from "./core/collector";
+import {
+  isOwnCollectorHealth,
+  startCollector,
+  type Collector,
+} from "./core/collector";
 import { exportCsv, filterCalls, totals } from "./core/analytics";
 import {
   costs,
@@ -49,6 +53,14 @@ const connectionFromEndpoint = (value: unknown): Connection | undefined => {
     ? parseConnection({ port: Number(match[1]), token: match[2] })
     : undefined;
 };
+const isStoredFile = async (path: string): Promise<boolean> => {
+  try {
+    return (await stat(path)).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+};
 const esc = (s: string) =>
   s.replace(
     /[&<>"']/g,
@@ -61,28 +73,45 @@ const esc = (s: string) =>
 export async function activate(context: vscode.ExtensionContext) {
   if (!vscode.workspace.isTrusted) return;
   const storage = context.globalStorageUri.fsPath;
+  const storeId = createHash("sha256")
+    .update(storage)
+    .digest("hex")
+    .slice(0, 24);
   const root = join(storage, "projects");
   await mkdir(root, { recursive: true, mode: 0o700 });
+  const remoteName = vscode.env.remoteName?.toLowerCase();
+  const remoteLabel = remoteName?.startsWith("wsl")
+    ? "WSL"
+    : remoteName?.startsWith("dev-container")
+      ? "Dev Container"
+      : "remote";
+  const remoteUiFallback =
+    Boolean(remoteName) &&
+    vscode.extensions.getExtension("openhoo.hoosage")?.extensionKind ===
+      vscode.ExtensionKind.UI;
   const folders = vscode.workspace.workspaceFolders ?? [];
   const identity =
     vscode.workspace.workspaceFile?.toString() ?? folders[0]?.uri.toString();
-  const current: Project | undefined = identity
-    ? {
-        id: createHash("sha256").update(identity).digest("hex").slice(0, 24),
-        name: vscode.workspace.name ?? folders[0]?.name ?? "Workspace",
-        kind:
-          folders.length > 1 || vscode.workspace.workspaceFile
-            ? "workspace"
-            : "folder",
-        folderCount: folders.length,
-        createdAt: Date.now(),
-        pathHashes: folders.map((f) => folderPathHash(f.uri.fsPath)),
-      }
-    : undefined;
+  const current: Project | undefined =
+    identity && !remoteUiFallback
+      ? {
+          id: createHash("sha256").update(identity).digest("hex").slice(0, 24),
+          name: vscode.workspace.name ?? folders[0]?.name ?? "Workspace",
+          kind:
+            folders.length > 1 || vscode.workspace.workspaceFile
+              ? "workspace"
+              : "folder",
+          folderCount: folders.length,
+          createdAt: Date.now(),
+          pathHashes: folders.map((f) => folderPathHash(f.uri.fsPath)),
+        }
+      : undefined;
   const capture = (id: string) => join(root, id, "copilot.jsonl");
   const tailers = new Map<string, UsageTailer>();
   const cliScanner = new CliUsageScanner();
   const views = new Set<vscode.Webview>();
+  const diagnostics = vscode.window.createOutputChannel("hoosage tracking");
+  context.subscriptions.push(diagnostics);
   const statusBar = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
     40,
@@ -92,17 +121,18 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(statusBar);
   let panel: vscode.WebviewPanel | undefined;
   let snapshot: Snapshot = {
-    projects: [],
+    projects: current ? [current] : [],
     calls: [],
     currentProjectId: current?.id,
-    status: "off",
-    statusDetail:
-      "Enable Copilot Chat tracking once for all projects. Local sessions are indexed automatically.",
+    status: "waiting",
+    statusDetail: "Reading saved usage on this extension host…",
     updatedAt: Date.now(),
     skippedLines: 0,
     errors: [],
+    indexing: true,
   };
   let refreshPromise: Promise<Snapshot> | undefined;
+  let indexingTimer: ReturnType<typeof setTimeout> | undefined;
   let needsReload = false;
   let reloadPromptVersion = 0;
   let changingSettings = false;
@@ -118,56 +148,48 @@ export async function activate(context: vscode.ExtensionContext) {
   } catch {
     /* A fresh profile has no connection until tracking is enabled. */
   }
-  if (!connection) {
-    const c = config();
-    const recovered =
-      c.get("enabled") === true &&
-      c.get("exporterType") === "otlp-http" &&
-      !c.get("outfile") &&
-      c.get("captureContent") === false
-        ? connectionFromEndpoint(c.get("otlpEndpoint"))
-        : undefined;
-    if (recovered) {
-      // The exact local endpoint and exporter settings identify an existing
-      // hoosage setup. Rebind it after lost storage without changing VS Code
-      // settings or asking every project to enable tracking again.
-      connection = recovered;
-      try {
-        await writeFile(
-          join(storage, "collector.json"),
-          JSON.stringify(recovered),
-          {
-            flag: "wx",
-            mode: 0o600,
-          },
-        );
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const stored = parseConnection(
-          JSON.parse(await readFile(join(storage, "collector.json"), "utf8")),
-        );
-        if (stored) connection = stored;
-        else
-          await writeFile(
-            join(storage, "collector.json"),
-            JSON.stringify(recovered),
-            {
-              mode: 0o600,
-            },
-          );
-      }
-      if (!context.globalState.get(BACKUP))
-        await context.globalState.update(
-          BACKUP,
-          Object.fromEntries(KEYS.map((key) => [key, { value: undefined }])),
-        );
+  const c = config();
+  const configured =
+    c.get("enabled") === true &&
+    c.get("exporterType") === "otlp-http" &&
+    !c.get("outfile") &&
+    c.get("captureContent") === false
+      ? connectionFromEndpoint(c.get("otlpEndpoint"))
+      : undefined;
+  if (configured && !remoteUiFallback) {
+    // VS Code's configured endpoint is authoritative for an existing local
+    // setup. Rebind that exact port/token when collector.json is missing or
+    // stale, so Copilot never keeps sending to an abandoned listener.
+    if (
+      !connection ||
+      connection.port !== configured.port ||
+      connection.token !== configured.token
+    ) {
+      connection = configured;
+      await writeFile(
+        join(storage, "collector.json"),
+        JSON.stringify(configured),
+        {
+          mode: 0o600,
+        },
+      );
     }
+    if (!context.globalState.get(BACKUP))
+      await context.globalState.update(
+        BACKUP,
+        Object.fromEntries(KEYS.map((key) => [key, { value: undefined }])),
+      );
   }
   let registrationError: string | undefined;
+  let missingHistoryFile = false;
   if (current) {
     await mkdir(join(root, current.id), { recursive: true, mode: 0o700 });
+    const existed = await isStoredFile(join(root, current.id, "project.json"));
+    const hadHistory = await isStoredFile(capture(current.id));
     await persistProject(current);
-    await writeFile(capture(current.id), "", { flag: "a", mode: 0o600 });
+    missingHistoryFile = existed && !hadHistory;
+    if (!missingHistoryFile)
+      await writeFile(capture(current.id), "", { flag: "a", mode: 0o600 });
     try {
       await registerWindow(storage, vscode.env.sessionId, current.id);
     } catch {
@@ -231,6 +253,7 @@ export async function activate(context: vscode.ExtensionContext) {
         ...connection,
         projectId: "host",
         file: "",
+        storeId,
         route: (sessionId) => routeWindow(storage, sessionId),
       });
     } catch (error) {
@@ -240,11 +263,11 @@ export async function activate(context: vscode.ExtensionContext) {
             signal: AbortSignal.timeout(1500),
             redirect: "error",
           });
-          const health = (await response.json()) as {
-            projectId?: string;
-            protocol?: number;
-          };
-          if (health.projectId === "host" && health.protocol === 2) return; // Another window owns this project's collector.
+          const health = await response.json();
+          if (isOwnCollectorHealth(health, storeId)) return; // Another window owns this profile's collector.
+          collectorError =
+            "The configured collector belongs to another VS Code profile or extension host. Tracking is blocked to keep projects separate; run Diagnose Tracking.";
+          return;
         } catch {
           /* A different listener must not receive project telemetry. */
         }
@@ -255,6 +278,8 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   function blocker(): string | undefined {
+    if (remoteUiFallback)
+      return `Hoosage is running locally while this project is in ${remoteLabel}. Install Hoosage on the remote workspace host and reload the window. Use Diagnose Tracking to inspect this window.`;
     if (registrationError) return registrationError;
     if (!current || !folders.length)
       return canStopTracking()
@@ -285,23 +310,31 @@ export async function activate(context: vscode.ExtensionContext) {
   async function readSnapshot(): Promise<Snapshot> {
     const projects: Project[] = [];
     const errors: string[] = [];
+    if (missingHistoryFile)
+      errors.push(
+        "Saved Chat history is missing for this previously registered project on this host. Check the original VS Code profile or remote host.",
+      );
     await ensureCollector();
-    for (const id of await readdir(root)) {
-      if (!/^[a-f0-9]{24}$/.test(id)) continue;
-      try {
-        const project: Project = JSON.parse(
-          await readFile(join(root, id, "project.json"), "utf8"),
-        );
-        if (project.id !== id || typeof project.name !== "string") continue;
-        projects.push(project);
-        if (!tailers.has(id)) tailers.set(id, new UsageTailer(capture(id), id));
-        await tailers.get(id)!.poll();
-      } catch {
-        errors.push(
-          `Could not read local usage for ${id.slice(0, 8)}. Check storage permissions and refresh.`,
-        );
-      }
-    }
+    const ids = (await readdir(root)).filter((id) => /^[a-f0-9]{24}$/.test(id));
+    for (let start = 0; start < ids.length; start += 8)
+      await Promise.all(
+        ids.slice(start, start + 8).map(async (id) => {
+          try {
+            const project: Project = JSON.parse(
+              await readFile(join(root, id, "project.json"), "utf8"),
+            );
+            if (project.id !== id || typeof project.name !== "string") return;
+            projects.push(project);
+            if (!tailers.has(id))
+              tailers.set(id, new UsageTailer(capture(id), id));
+            await tailers.get(id)!.poll();
+          } catch {
+            errors.push(
+              `Could not read local usage for ${id.slice(0, 8)}. Check storage permissions and refresh.`,
+            );
+          }
+        }),
+      );
     if (current && !projects.some((p) => p.id === current.id))
       projects.unshift(current);
     const projectIndex = new ProjectIndex(projects);
@@ -346,6 +379,8 @@ export async function activate(context: vscode.ExtensionContext) {
       config().get("exporterType") === "otlp-http" &&
       !config().get("outfile") &&
       config().get("captureContent") === false;
+    const settingsMismatch =
+      current && connection && config().get("enabled") === true && !connected;
     const currentCalls = calls.filter((c) => c.projectId === current?.id);
     const status = problem
       ? "blocked"
@@ -361,11 +396,17 @@ export async function activate(context: vscode.ExtensionContext) {
       (needsReload
         ? "Reload VS Code to apply the Copilot exporter settings."
         : !connected
-          ? "Enable Copilot Chat tracking once for all projects. Local sessions are indexed automatically."
+          ? settingsMismatch
+            ? "Copilot telemetry settings do not match the local collector. Run Diagnose Tracking to inspect this window."
+            : "Enable Copilot Chat tracking once for all projects. Local sessions are indexed automatically."
           : currentCalls.length
             ? "Tracking enabled for all open projects. Updates every 5 seconds."
-            : "This project is registered automatically. Use Copilot Chat to record usage; reload if you just enabled tracking.");
-    if ([...tailers.values()].some((t) => !t.caughtUp) || !cliScanner.caughtUp)
+            : remoteName
+              ? `Collector ready on the ${remoteLabel} host. Run Copilot Chat, then Diagnose Tracking to confirm a Chat span arrives here.`
+              : "This project is registered automatically. Use Copilot Chat to record usage; reload if you just enabled tracking.");
+    const indexing =
+      [...tailers.values()].some((t) => !t.caughtUp) || !cliScanner.caughtUp;
+    if (indexing)
       errors.push(
         "Reading older local data. Totals will update as indexing completes.",
       );
@@ -381,6 +422,7 @@ export async function activate(context: vscode.ExtensionContext) {
         [...tailers.values()].reduce((n, t) => n + t.skippedLines, 0) +
         cliScanner.skippedLines,
       errors,
+      indexing,
     };
   }
 
@@ -392,6 +434,10 @@ export async function activate(context: vscode.ExtensionContext) {
       } catch {
         snapshot = {
           ...snapshot,
+          status: "blocked",
+          statusDetail:
+            "Local storage could not be read. Check permissions and refresh.",
+          indexing: false,
           errors: [
             "Local storage could not be read. Check permissions and refresh.",
           ],
@@ -405,11 +451,14 @@ export async function activate(context: vscode.ExtensionContext) {
         notation: "compact",
         maximumFractionDigits: 1,
       }).format(today.tokens);
-      statusBar.text =
-        snapshot.status === "active"
+      statusBar.text = snapshot.indexing
+        ? "$(sync~spin) hoosage"
+        : snapshot.status === "active"
           ? `$(graph) ${costLabel(todayCost)} · ${number} tokens`
           : "$(graph) hoosage";
-      statusBar.tooltip = `hoosage · ${current?.name ?? "No project"}\n${today.calls} model calls today · ${today.missingUsage} with incomplete token data\nUSD: ${costDescription(todayCost)}\n${snapshot.statusDetail}`;
+      statusBar.tooltip = snapshot.indexing
+        ? "hoosage · Indexing saved usage on this host. Totals will appear when the scan completes."
+        : `hoosage · ${current?.name ?? "No project"}\n${today.calls} model calls today · ${today.missingUsage} with incomplete token data\nUSD: ${costDescription(todayCost)}\n${snapshot.statusDetail}`;
       vscode.workspace.getConfiguration("hoosage").get("showStatusBar")
         ? statusBar.show()
         : statusBar.hide();
@@ -418,8 +467,68 @@ export async function activate(context: vscode.ExtensionContext) {
       return snapshot;
     })().finally(() => {
       refreshPromise = undefined;
+      if (snapshot.indexing && !indexingTimer)
+        indexingTimer = setTimeout(() => {
+          indexingTimer = undefined;
+          void refresh();
+        }, 250);
     });
     return refreshPromise;
+  }
+
+  async function diagnosticLines(): Promise<string[]> {
+    const state = await refresh();
+    let collectorReachable = false;
+    if (connection) {
+      try {
+        const response = await fetch(`${endpoint()}/health`, {
+          signal: AbortSignal.timeout(1500),
+          redirect: "error",
+        });
+        collectorReachable =
+          response.ok && isOwnCollectorHealth(await response.json(), storeId);
+      } catch {
+        /* An unreachable collector is reported below without its URL. */
+      }
+    }
+    const chatCalls = state.calls.filter(
+      (call) => call.projectId === current?.id && !call.source,
+    );
+    const registered = state.projects.find((p) => p.id === current?.id);
+    const location = !remoteName
+      ? "Local extension host"
+      : remoteUiFallback
+        ? `Local UI host for ${remoteLabel} workspace`
+        : `${remoteLabel} workspace host`;
+    return [
+      "hoosage tracking diagnostics",
+      `Extension host: ${location}`,
+      `Current project registered here: ${registered ? "yes" : "no"}`,
+      `Project record created here: ${registered && Number.isFinite(registered.createdAt) ? new Date(registered.createdAt).toISOString() : "unknown"}`,
+      `Saved Chat entries for this project on this host: ${chatCalls.length}`,
+      `Saved Chat history file for this project: ${current && (await isStoredFile(capture(current.id))) ? "present" : "missing"}`,
+      `Collector configuration: ${connection ? "present" : "missing"}`,
+      `Copilot endpoint matches collector: ${connection && config().get("otlpEndpoint") === endpoint() ? "yes" : "no"}`,
+      `Collector reachable here: ${collectorReachable ? "yes" : "no"}`,
+      `Tracking status: ${state.status}`,
+      `Indexing saved usage: ${state.indexing ? "yes" : "no"}`,
+      ...(remoteUiFallback
+        ? [
+            `Next step: install Hoosage inside the ${remoteLabel} workspace, then reload.`,
+          ]
+        : remoteName
+          ? [
+              "Remote delivery is confirmed only after a real Copilot Chat span appears in this host's saved entries.",
+            ]
+          : []),
+      "If older history is missing, check the original VS Code profile and extension host. Hoosage cannot recreate events that were never saved there.",
+    ];
+  }
+
+  async function showDiagnostics() {
+    diagnostics.clear();
+    diagnostics.appendLine((await diagnosticLines()).join("\n"));
+    diagnostics.show(true);
   }
 
   async function reloadPrompt() {
@@ -477,6 +586,7 @@ export async function activate(context: vscode.ExtensionContext) {
           token,
           projectId: "host",
           file: "",
+          storeId,
           route: (sessionId) => routeWindow(storage, sessionId),
         });
         connection = { port: candidate.port, token };
@@ -629,6 +739,9 @@ export async function activate(context: vscode.ExtensionContext) {
             case "refresh":
               await refresh();
               break;
+            case "diagnose":
+              await showDiagnostics();
+              break;
             case "enable":
               await enable();
               break;
@@ -702,6 +815,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("hoosage.enable", enable),
     vscode.commands.registerCommand("hoosage.disable", disable),
     vscode.commands.registerCommand("hoosage.refresh", refresh),
+    vscode.commands.registerCommand("hoosage.diagnose", showDiagnostics),
     vscode.commands.registerCommand("hoosage.export", () => exportUsage()),
     vscode.window.registerWebviewViewProvider("hoosage.overview", {
       resolveWebviewView(view) {
@@ -719,11 +833,12 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push({
     dispose: () => {
       clearInterval(timer);
+      if (indexingTimer) clearTimeout(indexingTimer);
       panel?.dispose();
       void collector?.close();
     },
   });
-  await refresh();
+  void refresh();
   // Read-only API used by the real extension-host integration test.
-  return { getSnapshot: refresh };
+  return { getSnapshot: refresh, getDiagnostics: diagnosticLines };
 }
