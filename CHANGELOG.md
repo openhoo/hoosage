@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.4 (2026-09-23)
+
+### Bug Fixes
+
+- **hoosage:** identify storage and project in tracking diagnostics (#26) (75386c1)
+
 ## 0.8.3 (2026-09-23)
 
 ### Bug Fixes
