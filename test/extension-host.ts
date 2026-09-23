@@ -54,7 +54,7 @@ export async function run() {
     ),
     "Completed local sessions discover projects without an enable click",
   );
-  assert.equal(initial.calls.length, 2);
+  assert.equal(initial.calls.filter((call) => call.source !== "chat-history").length, 2);
   assert.equal(
     initial.calls.find((call) => call.source === "cli")?.projectId,
     process.env.HOOSAGE_TEST_AUTO_PROJECT_ID,
@@ -63,6 +63,25 @@ export async function run() {
     initial.calls.find((call) => call.model === "Prior version model")?.input,
     77,
     "Activation preserves saved usage from a previous version",
+  );
+  let imported = initial;
+  for (
+    let i = 0;
+    i < 100 && !imported.calls.some((call) => call.model === "historical-model");
+    i++
+  ) {
+    await new Promise((r) => setTimeout(r, 50));
+    imported = await api.getSnapshot();
+  }
+  const historicalCall = imported.calls.find((call) => call.model === "historical-model");
+  assert.ok(historicalCall, "Historical Chat usage appears without delaying activation");
+  assert.equal(historicalCall.input, 123);
+  assert.equal(historicalCall.output, 45);
+  assert.equal(historicalCall.nanoAiu, 2_000_000_000);
+  assert.ok(
+    !(await readFile(process.env.HOOSAGE_TEST_IMPORTED_HISTORY!, "utf8"))
+      .includes("NEVER_PERSIST_HISTORY_PROMPT"),
+    "Only usage metadata may be persisted",
   );
   assert.equal(
     JSON.parse(await readFile(process.env.HOOSAGE_TEST_PROJECT_RECORD!, "utf8"))

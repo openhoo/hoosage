@@ -39,6 +39,31 @@ await writeFile(
   join(knownWindow, "workspace.json"),
   JSON.stringify({ folder: pathToFileURL(knownProject).toString() }),
 );
+const historicalWindow = join(profile, "User/workspaceStorage/sample-history");
+await mkdir(join(historicalWindow, "chatSessions"), { recursive: true });
+await writeFile(
+  join(historicalWindow, "workspace.json"),
+  JSON.stringify({ folder: uri }),
+);
+await writeFile(
+  join(historicalWindow, "chatSessions", "before-install.jsonl"),
+  [
+    JSON.stringify({ kind: 0, v: { sessionId: "before-install", requests: [] } }),
+    JSON.stringify({
+      kind: 2,
+      k: ["requests"],
+      v: [{
+        requestId: "before-install-request",
+        timestamp: Date.now() - 7 * 86_400_000,
+        modelId: "copilot/historical-model",
+        copilotCredits: 2,
+        prompt: "NEVER_PERSIST_HISTORY_PROMPT",
+        result: { metadata: { toolCallRounds: [{}], promptTokens: 123, outputTokens: 45 } },
+      }],
+    }),
+    "",
+  ].join("\n"),
+);
 const cliSession = join(copilotHome, "session-state", "auto-project-session");
 await mkdir(cliSession, { recursive: true });
 await writeFile(
@@ -150,5 +175,6 @@ await runTests({
     HOOSAGE_TEST_ENDPOINT: `http://127.0.0.1:${port}/${token}`,
     HOOSAGE_TEST_CAPTURE: join(store, "copilot.jsonl"),
     HOOSAGE_TEST_PROJECT_RECORD: join(store, "project.json"),
+    HOOSAGE_TEST_IMPORTED_HISTORY: join(store, "chat-history.json"),
   },
 });

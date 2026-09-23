@@ -1,6 +1,10 @@
 import type { UsageCall, Totals } from "./types";
 import { callCost, PRICING_DATE } from "./pricing";
 
+/** Entries that summarize several model requests instead of one span. */
+export const isAggregated = (c: UsageCall) =>
+  c.source === "cli" || c.source === "jetbrains" || c.source === "chat-history";
+
 export function totals(calls: UsageCall[]): Totals {
   const input = calls.reduce((n, c) => n + (c.input ?? 0), 0);
   const output = calls.reduce((n, c) => n + (c.output ?? 0), 0);
@@ -9,17 +13,11 @@ export function totals(calls: UsageCall[]): Totals {
     .filter((d): d is number => d !== undefined);
   return {
     calls: calls.reduce(
-      (n, c) =>
-        n +
-        (c.source === "cli" || c.source === "jetbrains"
-          ? (c.requests ?? 0)
-          : 1),
+      (n, c) => n + (isAggregated(c) ? (c.requests ?? 0) : 1),
       0,
     ),
     missingRequests: calls.filter(
-      (c) =>
-        (c.source === "cli" || c.source === "jetbrains") &&
-        c.requests === undefined,
+      (c) => isAggregated(c) && c.requests === undefined,
     ).length,
     input,
     output,
@@ -188,7 +186,7 @@ export function exportCsv(calls: UsageCall[]): string {
             (cost.assumedCache ? "Missing cache detail assumed zero" : ""),
           cost.source === "estimated" ? PRICING_DATE : undefined,
           c.source ?? "chat",
-          c.source === "cli" || c.source === "jetbrains" ? c.requests : 1,
+          isAggregated(c) ? c.requests : 1,
         ];
       }),
     ]

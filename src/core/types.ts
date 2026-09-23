@@ -1,7 +1,7 @@
 export interface Project {
   id: string;
   name: string;
-  kind: "folder" | "workspace" | "cli" | "jetbrains";
+  kind: "folder" | "workspace" | "cli" | "jetbrains" | "chat";
   folderCount: number;
   createdAt: number;
   /** sha256 of each normalized, lowercased workspace folder path.
@@ -18,8 +18,10 @@ export interface UsageCall {
   sessionId?: string;
   /** "chat" spans arrive via the OTLP collector; "cli"/"jetbrains" entries are
    * read from Copilot session-state files ("jetbrains" when workspace.yaml
-   * marks the session as created by the JetBrains plugin). Absent = "chat". */
-  source?: "chat" | "cli" | "jetbrains";
+   * marks the session as created by the JetBrains plugin); "chat-history"
+   * entries are recovered from VS Code's own stored Chat transcripts and
+   * summarize one Chat request (possibly several model calls). Absent = "chat". */
+  source?: "chat" | "cli" | "jetbrains" | "chat-history";
   input?: number;
   output?: number;
   cacheRead?: number;
