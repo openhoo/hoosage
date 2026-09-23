@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0 (2026-09-23)
+
+### Features
+
+- import historical Copilot Chat usage from VS Code chat transcripts (#31) (0c5e56a)
+
 ## 0.9.0 (2026-09-23)
 
 ### Features
