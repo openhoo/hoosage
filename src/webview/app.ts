@@ -713,7 +713,13 @@ document.addEventListener("click", (event) => {
     render();
   }
 });
-root.addEventListener("focusout", () => {
+root.addEventListener("focusout", (event) => {
+  // During a mouse click, activeElement can briefly be body before the next control receives focus.
+  if (
+    event.relatedTarget instanceof Node &&
+    root.querySelector(".date-nav")?.contains(event.relatedTarget)
+  )
+    return;
   queueMicrotask(() => {
     if (calendarOpen && !root.querySelector(".date-nav")?.contains(document.activeElement)) {
       calendarOpen = false;
