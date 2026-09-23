@@ -2,7 +2,7 @@
   "name": "hoosage",
   "displayName": "hoosage — Copilot usage, by project",
   "description": "Copilot costs, tokens and model calls by project.",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "publisher": "openhoo",
   "license": "MIT",
   "engines": {

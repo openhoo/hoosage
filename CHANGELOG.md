@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.3 (2026-09-23)
+
+### Bug Fixes
+
+- **hoosage:** clarify project discovery and expose history read diagnostics (#24) (0d9d554)
+
 ## 0.8.2 (2026-09-23)
 
 ### Bug Fixes
