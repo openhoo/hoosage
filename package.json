@@ -128,7 +128,7 @@
     "vscode:prepublish": "npm run build",
     "package": "vsce package --no-dependencies --baseContentUrl https://github.com/openhoo/hoosage/blob/main --baseImagesUrl https://github.com/openhoo/hoosage/raw/main --out hoosage.vsix",
     "preview": "node scripts/preview.mjs",
-    "test:extension": "node scripts/test-extension.mjs"
+    "test:extension": "node scripts/test-extension.mjs && node scripts/test-collector-recovery.mjs"
   },
   "devDependencies": {
     "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",

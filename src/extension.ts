@@ -42,6 +42,13 @@ const parseConnection = (value: unknown): Connection | undefined => {
     ? { port: saved.port as number, token: saved.token }
     : undefined;
 };
+const connectionFromEndpoint = (value: unknown): Connection | undefined => {
+  if (typeof value !== "string") return undefined;
+  const match = /^http:\/\/127\.0\.0\.1:(\d{4,5})\/([a-f0-9]{48})$/.exec(value);
+  return match
+    ? parseConnection({ port: Number(match[1]), token: match[2] })
+    : undefined;
+};
 const esc = (s: string) =>
   s.replace(
     /[&<>"']/g,
@@ -101,13 +108,60 @@ export async function activate(context: vscode.ExtensionContext) {
   let changingSettings = false;
   let collector: Collector | undefined;
   let collectorError: string | undefined;
+  const config = () =>
+    vscode.workspace.getConfiguration("github.copilot.chat.otel");
   let connection: Connection | undefined;
   try {
     connection = parseConnection(
       JSON.parse(await readFile(join(storage, "collector.json"), "utf8")),
     );
   } catch {
-    /* A profile is unconfigured until the user enables tracking. */
+    /* A fresh profile has no connection until tracking is enabled. */
+  }
+  if (!connection) {
+    const c = config();
+    const recovered =
+      c.get("enabled") === true &&
+      c.get("exporterType") === "otlp-http" &&
+      !c.get("outfile") &&
+      c.get("captureContent") === false
+        ? connectionFromEndpoint(c.get("otlpEndpoint"))
+        : undefined;
+    if (recovered) {
+      // The exact local endpoint and exporter settings identify an existing
+      // hoosage setup. Rebind it after lost storage without changing VS Code
+      // settings or asking every project to enable tracking again.
+      connection = recovered;
+      try {
+        await writeFile(
+          join(storage, "collector.json"),
+          JSON.stringify(recovered),
+          {
+            flag: "wx",
+            mode: 0o600,
+          },
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const stored = parseConnection(
+          JSON.parse(await readFile(join(storage, "collector.json"), "utf8")),
+        );
+        if (stored) connection = stored;
+        else
+          await writeFile(
+            join(storage, "collector.json"),
+            JSON.stringify(recovered),
+            {
+              mode: 0o600,
+            },
+          );
+      }
+      if (!context.globalState.get(BACKUP))
+        await context.globalState.update(
+          BACKUP,
+          Object.fromEntries(KEYS.map((key) => [key, { value: undefined }])),
+        );
+    }
   }
   let registrationError: string | undefined;
   if (current) {
@@ -150,8 +204,6 @@ export async function activate(context: vscode.ExtensionContext) {
     connection
       ? `http://127.0.0.1:${connection.port}/${connection.token}`
       : undefined;
-  const config = () =>
-    vscode.workspace.getConfiguration("github.copilot.chat.otel");
   const canStopTracking = () =>
     Boolean(context.globalState.get(BACKUP)) &&
     config().get("enabled") === true;
