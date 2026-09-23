@@ -17,6 +17,7 @@ import {
   filterCalls,
   daily,
   exportCsv,
+  groupSessions,
   startOfRange,
 } from "../src/core/analytics";
 import { startCollector, storedSpan } from "../src/core/collector";
@@ -255,6 +256,23 @@ test("project filtering, local calendar boundaries and cache accounting are cons
   );
 });
 
+test("unlinked calls remain separate and session IDs cannot cross projects or sources", () => {
+  const base = parseSpan(span(), "a")!;
+  const calls = [
+    { ...base, id: "shared", sessionId: undefined },
+    { ...base, id: "two", sessionId: undefined },
+    { ...base, id: "three", sessionId: "shared" },
+    { ...base, id: "four", sessionId: "shared" },
+    { ...base, id: "five", projectId: "b", sessionId: "shared" },
+    { ...base, id: "six", source: "cli" as const, sessionId: "shared" },
+  ];
+  const groups = groupSessions(calls);
+  assert.deepEqual(
+    groups.map(([, entries]) => entries.map((entry) => entry.id)).sort(),
+    [["shared"], ["two"], ["three", "four"], ["five"], ["six"]].sort(),
+  );
+});
+
 test("CSV keeps unknown values empty and neutralizes spreadsheet formulas", () => {
   const c = {
     ...parseSpan(span(), "a")!,
@@ -365,6 +383,53 @@ test("collector rejects browser traffic and wrong project routes; accepts gzip a
     });
     assert.equal(response.status, 200);
     assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 1);
+  } finally {
+    await collector.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("collector routes a multi-span batch once per window and keeps every call", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-"));
+  const file = join(dir, "usage.jsonl");
+  let routes = 0;
+  const collector = await startCollector({
+    port: 0,
+    token: "batch-token",
+    projectId: "host",
+    file: "",
+    route: async (sessionId) => {
+      routes++;
+      return sessionId === "window-a" ? { projectId: "a", file } : undefined;
+    },
+  });
+  try {
+    const spans = Array.from({ length: 120 }, (_, index) => ({
+      ...span(),
+      spanId: index.toString(16).padStart(16, "0"),
+    }));
+    const response = await fetch(
+      `http://127.0.0.1:${collector.port}/batch-token/v1/traces`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          resourceSpans: [
+            {
+              resource: {
+                attributes: [
+                  { key: "session.id", value: { stringValue: "window-a" } },
+                ],
+              },
+              scopeSpans: [{ spans }],
+            },
+          ],
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(routes, 1);
+    assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 120);
   } finally {
     await collector.close();
     await rm(dir, { recursive: true, force: true });

@@ -19,6 +19,7 @@ export async function run() {
     "reload",
     "Real enable command completes setup",
   );
+  assert.equal((await api.getSnapshot()).canStopTracking, true);
   assert.equal(
     vscode.workspace
       .getConfiguration("github.copilot.chat.otel")
@@ -112,7 +113,25 @@ export async function run() {
     "Dashboard opens in a real editor tab",
   );
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  void vscode.commands.executeCommand("hoosage.disable");
+  for (
+    let i = 0;
+    i < 100 &&
+    vscode.workspace
+      .getConfiguration("github.copilot.chat.otel")
+      .inspect("enabled")?.globalValue !== false;
+    i++
+  )
+    await new Promise((r) => setTimeout(r, 50));
+  assert.equal(
+    vscode.workspace
+      .getConfiguration("github.copilot.chat.otel")
+      .inspect("enabled")?.globalValue,
+    false,
+    "Stop tracking restores the previous user setting",
+  );
+  assert.equal((await api.getSnapshot()).canStopTracking, false);
   console.log(
-    "HOOSAGE_EXTENSION_HOST_OK: activation, project identity, live HTTP ingestion, USD cost, deduplication, privacy, dashboard tab",
+    "HOOSAGE_EXTENSION_HOST_OK: activation, project identity, live HTTP ingestion, USD cost, deduplication, privacy, dashboard tab, settings restore",
   );
 }

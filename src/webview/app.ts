@@ -1,4 +1,10 @@
-import { byModel, daily, filterCalls, totals } from "../core/analytics";
+import {
+  byModel,
+  daily,
+  filterCalls,
+  groupSessions,
+  totals,
+} from "../core/analytics";
 import {
   costs,
   costLabel,
@@ -6,7 +12,7 @@ import {
   PRICING_DATE,
   PRICING_SOURCE,
 } from "../core/pricing";
-import type { Snapshot, UsageCall } from "../core/types";
+import type { Snapshot, Totals, UsageCall } from "../core/types";
 import { demoSnapshot } from "./demo";
 
 declare const acquireVsCodeApi:
@@ -31,6 +37,7 @@ let demo = false;
 let real: Snapshot | undefined;
 let data: Snapshot | undefined;
 let expandedSession: string | undefined;
+let visibleSessions = 100;
 let toast = "";
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -38,11 +45,30 @@ const number = (n: number) =>
   new Intl.NumberFormat("en", { maximumFractionDigits: 0 }).format(n);
 const count = (n: number, label: string) =>
   `${number(n)} ${label}${n === 1 ? "" : "s"}`;
+const measuredCalls = (t: Totals) =>
+  t.missingRequests ? (t.calls ? `${number(t.calls)}+` : "—") : number(t.calls);
+const callCount = (t: Totals) =>
+  t.missingRequests
+    ? `${t.calls ? `${count(t.calls, "call")} + ` : ""}${count(t.missingRequests, "entry")} with unknown call count`
+    : count(t.calls, "call");
 const compact = (n: number) =>
   new Intl.NumberFormat("en", {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(n);
+const knownTokenLabel = (
+  calls: UsageCall[],
+  value: number,
+  part: "input" | "output" | "cacheRead" | "total",
+) =>
+  calls.length &&
+  calls.every((call) =>
+    part === "total"
+      ? call.input === undefined && call.output === undefined
+      : call[part] === undefined,
+  )
+    ? "—"
+    : compact(value);
 const h = (s: unknown) =>
   String(s ?? "").replace(
     /[&<>"']/g,
@@ -138,19 +164,27 @@ function overview(calls: UsageCall[]) {
       data.status === "blocked" ||
       data.status === "reload");
   const allEmpty = data.calls.length === 0;
+  const setupAction =
+    data.status === "reload"
+      ? action("Reload window", "reload", true)
+      : data.canStopTracking
+        ? action("Stop tracking", "disable", true)
+        : data.status === "waiting"
+          ? action("Refresh usage", "refresh", true)
+          : action("Enable tracking", "enable", true);
   if (allEmpty)
-    return `<section class="onboarding">${icon("activity")}<h2>${data.status === "waiting" ? "No usage yet" : data.status === "reload" ? "Reload required" : data.status === "blocked" ? "Tracking unavailable" : "Tracking is off"}</h2><p>${h(data.statusDetail)}</p><div class="onboarding-actions">${data.status === "reload" ? action("Reload window", "reload", true) : data.status === "waiting" ? action("Refresh usage", "refresh", true) : action("Enable tracking", "enable", true)}<button class="button" data-action="demo">Preview ${icon("arrow")}</button></div></section><div class="coverage-note"><span>Tracking starts after setup and reload. <button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
-  return `${needsSetup ? `<div class="notice setup-notice"><span>${h(data.statusDetail)}</span>${action(data.status === "reload" ? "Reload" : "Enable tracking", data.status === "reload" ? "reload" : "enable")}</div>` : ""}
+    return `<section class="onboarding">${icon("activity")}<h2>${data.status === "waiting" ? "No usage yet" : data.status === "reload" ? "Reload required" : data.status === "blocked" ? "Tracking unavailable" : "Tracking is off"}</h2><p>${h(data.statusDetail)}</p><div class="onboarding-actions">${setupAction}<button class="button" data-action="demo">Preview ${icon("arrow")}</button></div></section><div class="coverage-note"><span>Tracking starts after setup and reload. <button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
+  return `${needsSetup ? `<div class="notice setup-notice"><span>${h(data.statusDetail)}</span>${setupAction}</div>` : ""}
   <section class="stats" aria-label="Usage summary">
-    <article class="stat featured cost-stat"><div class="stat-label">Usage cost <span class="currency-tag">USD</span></div><div class="stat-number" title="${h(costDescription(price))}">${h(costLabel(price))}</div><div class="stat-foot">${price.unpricedCalls ? count(price.unpricedCalls, "unpriced call") : price.estimatedCalls ? "Includes estimates" : price.reportedCalls ? "Reported by Copilot" : "No cost data"}</div></article>
-    <article class="stat"><div class="stat-label">Tokens ${icon("bolt")}</div><div class="stat-number">${compact(t.tokens)}</div><div class="stat-foot">${t.missingUsage ? `${count(t.missingUsage, "call")} missing token data` : "Input + output"}</div></article>
-    <article class="stat"><div class="stat-label">Model calls ${icon("activity")}</div><div class="stat-number">${number(t.calls)}</div><div class="stat-foot">${count(t.sessions, "session")}</div></article>
-    <article class="stat"><div class="stat-label">Input tokens ${icon("download")}</div><div class="stat-number">${compact(t.input)}</div><div class="stat-foot">${compact(t.cacheRead)} cached</div></article>
-    <article class="stat"><div class="stat-label">Output tokens ${icon("arrow")}</div><div class="stat-number">${compact(t.output)}</div><div class="stat-foot">${t.calls ? `${(t.avgDurationMs / 1000).toFixed(1)}s avg. call` : "No calls"}</div></article>
+    <article class="stat featured cost-stat"><div class="stat-label">Usage cost <span class="currency-tag">USD</span></div><div class="stat-number" title="${h(costDescription(price))}">${h(costLabel(price))}</div><div class="stat-foot">${price.unpricedCalls ? count(price.unpricedCalls, "unpriced entry") : price.estimatedCalls ? "Includes estimates" : price.reportedCalls ? "Reported by Copilot" : "No cost data"}</div></article>
+    <article class="stat"><div class="stat-label">Tokens ${icon("bolt")}</div><div class="stat-number">${knownTokenLabel(calls, t.tokens, "total")}</div><div class="stat-foot">${t.missingUsage ? `${count(t.missingUsage, "entry")} missing token data` : "Input + output"}</div></article>
+    <article class="stat"><div class="stat-label">Model calls ${icon("activity")}</div><div class="stat-number" title="${h(callCount(t))}">${measuredCalls(t)}</div><div class="stat-foot">${count(t.sessions, "session")}${t.missingRequests ? " · Partial count" : ""}</div></article>
+    <article class="stat"><div class="stat-label">Input tokens ${icon("download")}</div><div class="stat-number">${knownTokenLabel(calls, t.input, "input")}</div><div class="stat-foot">${knownTokenLabel(calls, t.cacheRead, "cacheRead")} cached${calls.some((c) => c.cacheRead === undefined) ? " · partial" : ""}</div></article>
+    <article class="stat"><div class="stat-label">Output tokens ${icon("arrow")}</div><div class="stat-number">${knownTokenLabel(calls, t.output, "output")}</div><div class="stat-foot">${calls.some((c) => c.durationMs !== undefined) ? `${(t.avgDurationMs / 1000).toFixed(1)}s avg. timed call` : "No timing data"}</div></article>
   </section>
-  <div class="charts"><section class="card chart-card"><div class="card-heading"><h2>Tokens by day</h2><div class="legend"><span><i class="input-color"></i>Input</span><span><i class="output-color"></i>Output</span></div></div>${chart(calls)}</section><section class="card models-card"><div class="card-heading"><h2>Models</h2><span class="small-tag">Token share</span></div>${modelMix(calls)}</section></div>
+  <div class="charts"><section class="card chart-card"><div class="card-heading"><h2>Tokens by day</h2><div class="legend"><span><i class="input-color"></i>Input</span><span><i class="output-color"></i>Output</span></div></div>${chart(calls)}</section><section class="card models-card"><div class="card-heading"><h2>Models</h2><span class="small-tag">Observed share</span></div>${modelMix(calls)}</section></div>
   ${projects(calls, true)}
-  <div class="coverage-note"><span>${price.estimatedCalls ? "≈ Estimated cost · " : ""}${price.unpricedCalls ? "+ Excludes unpriced calls · " : ""}<button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
+  <div class="coverage-note"><span>${price.estimatedCalls ? "≈ Estimated cost · " : ""}${price.unpricedCalls ? "+ Excludes unpriced usage · " : ""}<button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
 }
 
 function chart(calls: UsageCall[]) {
@@ -163,7 +197,7 @@ function chart(calls: UsageCall[]) {
       const width = Math.max(3, 650 / days - 9);
       const input = (p.input / maximum) * 154;
       const output = (p.output / maximum) * 154;
-      return `<g class="chart-bar" tabindex="0" role="img" aria-label="${new Date(p.date).toLocaleDateString("en", { month: "short", day: "numeric" })}: ${number(p.input)} input, ${number(p.output)} output tokens"><title>${new Date(p.date).toLocaleDateString("en")} · ${number(p.tokens)} tokens · ${p.calls} calls</title><rect x="${x}" y="${182 - input}" width="${width}" height="${input}" rx="2" class="bar-input"/><rect x="${x}" y="${182 - input - output}" width="${width}" height="${output}" rx="2" class="bar-output"/>${i === 0 || i === days - 1 || i % Math.ceil(days / 5) === 0 ? `<text x="${x + width / 2}" y="209" text-anchor="middle">${new Date(p.date).toLocaleDateString("en", { month: "short", day: "numeric" })}</text>` : ""}</g>`;
+      return `<g class="chart-bar" tabindex="0" role="img" aria-label="${new Date(p.date).toLocaleDateString("en", { month: "short", day: "numeric" })}: ${number(p.input)} input, ${number(p.output)} output tokens${p.missingUsage ? "; incomplete token data" : ""}"><title>${new Date(p.date).toLocaleDateString("en")} · ${number(p.tokens)} observed tokens · ${callCount(p)}</title><rect x="${x}" y="${182 - input}" width="${width}" height="${input}" rx="2" class="bar-input"/><rect x="${x}" y="${182 - input - output}" width="${width}" height="${output}" rx="2" class="bar-output"/>${i === 0 || i === days - 1 || i % Math.ceil(days / 5) === 0 ? `<text x="${x + width / 2}" y="209" text-anchor="middle">${new Date(p.date).toLocaleDateString("en", { month: "short", day: "numeric" })}</text>` : ""}</g>`;
     })
     .join("");
   return `<div class="chart-wrap"><svg class="chart" viewBox="0 0 720 220" role="img" aria-label="Daily input and output token usage for the last ${days} days"><text x="0" y="31">${maxLabel}</text><text x="0" y="108">${compact(maximum / 2)}</text><text x="20" y="186">0</text><path d="M48 28H710 M48 105H710 M48 182H710" class="gridline"/>${bars}</svg></div>${!calls.length ? '<p class="chart-empty">No calls in this period.</p>' : ""}`;
@@ -176,10 +210,11 @@ function modelMix(calls: UsageCall[]) {
     return `<div class="mini-empty">${icon("bolt")}No model usage in this period.</div>`;
   return `<div class="model-list">${models
     .slice(0, 4)
-    .map(
-      (m, i) =>
-        `<div class="model"><div class="model-top"><span class="model-avatar tone-${i}">${h(m.model.slice(0, 1).toUpperCase())}</span><strong title="${h(m.model)}">${h(m.model)}</strong><span>${total ? Math.round((m.tokens / total) * 100) : 0}%</span></div><progress class="model-progress tone-${i}" max="${total || 1}" value="${m.tokens}" aria-label="${h(m.model)} share of tokens"></progress><div class="model-meta"><span>${count(m.calls, "call")} · ${compact(m.tokens)} tokens</span><strong class="model-cost" title="${h(costDescription(costs(calls.filter((c) => c.model === m.model))))}">${h(costLabel(costs(calls.filter((c) => c.model === m.model))))}</strong></div></div>`,
-    )
+    .map((m, i) => {
+      const modelCalls = calls.filter((c) => c.model === m.model);
+      const price = costs(modelCalls);
+      return `<div class="model"><div class="model-top"><span class="model-avatar tone-${i}">${h(m.model.slice(0, 1).toUpperCase())}</span><strong title="${h(m.model)}">${h(m.model)}</strong><span>${total ? `${Math.round((m.tokens / total) * 100)}%` : "—"}</span></div><progress class="model-progress tone-${i}" max="${total || 1}" value="${m.tokens}" aria-label="${h(m.model)} share of observed tokens"></progress><div class="model-meta"><span>${callCount(m)} · ${knownTokenLabel(modelCalls, m.tokens, "total")} observed tokens</span><strong class="model-cost" title="${h(costDescription(price))}">${h(costLabel(price))}</strong></div></div>`;
+    })
     .join(
       "",
     )}</div>${models.length > 4 ? `<p class="muted">+ ${models.length - 4} more models · see Activity</p>` : ""}`;
@@ -188,60 +223,53 @@ function modelMix(calls: UsageCall[]) {
 function projects(calls: UsageCall[], embedded = false) {
   const rows = data!.projects
     .filter((p) => projectId === "all" || p.id === projectId)
-    .map((p) => ({
-      project: p,
-      cost: costs(calls.filter((c) => c.projectId === p.id)),
-      ...totals(calls.filter((c) => c.projectId === p.id)),
-    }))
+    .map((p) => {
+      const usage = calls.filter((c) => c.projectId === p.id);
+      return { project: p, usage, cost: costs(usage), ...totals(usage) };
+    })
     .sort((a, b) => b.tokens - a.tokens);
   const all = totals(calls).tokens;
-  return `<section class="card projects-card" aria-label="Project usage">${embedded ? `<div class="card-heading"><h2>Projects</h2><button class="text-button" data-page="projects">All projects ${icon("arrow")}</button></div>` : ""}<div class="table-scroll"><table><thead><tr><th scope="col">Project</th><th scope="col">Model calls</th><th scope="col">Tokens</th><th scope="col">Cost (USD)</th><th scope="col" class="share-column">Token share</th><th scope="col"><span class="sr-only">View project</span></th></tr></thead><tbody>${rows.map((row, i) => `<tr><td><button class="project-link" data-project="${h(row.project.id)}"><span class="folder-icon tone-${i % 4}">${icon("projects")}</span><span><strong>${h(row.project.name)}</strong>${row.project.kind === "cli" ? "<small>Copilot CLI</small>" : row.project.kind === "workspace" ? `<small>Workspace group · ${count(row.project.folderCount, "folder")}</small>` : row.project.id === data!.currentProjectId ? "<small>Current workspace</small>" : ""}</span></button></td><td>${number(row.calls)}</td><td class="token-cell">${compact(row.tokens)}</td><td class="cost-cell" title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</td><td class="share-column"><div class="share-cell"><progress max="${all || 1}" value="${row.tokens}" aria-label="${h(row.project.name)} share of usage"></progress><span>${all ? Math.round((row.tokens / all) * 100) : 0}%</span></div></td><td><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></td></tr>`).join("")}</tbody></table></div>${!rows.length ? '<div class="mini-empty">No tracked projects.</div>' : ""}</section>`;
+  return `<section class="card projects-card" aria-label="Project usage">${embedded ? `<div class="card-heading"><h2>Projects</h2><button class="text-button" data-page="projects">All projects ${icon("arrow")}</button></div>` : ""}<div class="table-scroll"><table><thead><tr><th scope="col">Project</th><th scope="col">Model calls</th><th scope="col">Observed tokens</th><th scope="col">Cost (USD)</th><th scope="col" class="share-column">Token share</th><th scope="col"><span class="sr-only">View project</span></th></tr></thead><tbody>${rows.map((row, i) => `<tr><td><button class="project-link" data-project="${h(row.project.id)}"><span class="folder-icon tone-${i % 4}">${icon("projects")}</span><span><strong>${h(row.project.name)}</strong>${row.project.kind === "cli" ? "<small>Unmatched CLI sessions</small>" : row.project.kind === "jetbrains" ? "<small>Unmatched JetBrains sessions</small>" : row.project.kind === "workspace" ? `<small>Workspace group · ${count(row.project.folderCount, "folder")}</small>` : row.project.id === data!.currentProjectId ? "<small>Current workspace</small>" : ""}</span></button></td><td title="${h(callCount(row))}">${measuredCalls(row)}</td><td class="token-cell" title="${row.missingUsage ? `${count(row.missingUsage, "entry")} with incomplete token data` : "Observed input and output tokens"}">${knownTokenLabel(row.usage, row.tokens, "total")}</td><td class="cost-cell" title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</td><td class="share-column"><div class="share-cell"><progress max="${all || 1}" value="${row.tokens}" aria-label="${h(row.project.name)} share of observed tokens"></progress><span>${all ? `${Math.round((row.tokens / all) * 100)}%` : "—"}</span></div></td><td><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></td></tr>`).join("")}</tbody></table></div>${!rows.length ? '<div class="mini-empty">No tracked projects.</div>' : ""}</section>`;
 }
 
 function activity(calls: UsageCall[]) {
-  const groups = new Map<string, UsageCall[]>();
-  for (const call of calls) {
-    const key = `${call.projectId}:${call.sessionId ?? "unlinked"}`;
-    groups.set(key, [...(groups.get(key) ?? []), call]);
-  }
-  const sorted = [...groups.entries()].sort(
-    (a, b) =>
-      Math.max(...b[1].map((c) => c.timestamp)) -
-      Math.max(...a[1].map((c) => c.timestamp)),
-  );
-  return `<section class="card activity-card"><div class="card-heading"><h2>Sessions</h2><span class="small-tag">${count(calls.length, "model call")}</span></div>${
+  const sorted = groupSessions(calls);
+  return `<section class="card activity-card"><div class="card-heading"><h2>Sessions & calls</h2><span class="small-tag">${callCount(totals(calls))}</span></div>${
     !calls.length
       ? '<div class="mini-empty">' +
         icon("activity") +
         "No activity in this period.</div>"
       : sorted
-          .slice(0, 100)
+          .slice(0, visibleSessions)
           .map(([key, list]) => {
             const t = totals(list);
             const first = list[0]!;
             const p = data!.projects.find((p) => p.id === first.projectId);
-            const latest = Math.max(...list.map((c) => c.timestamp));
-            return `<div class="session"><button class="session-toggle" data-session="${h(key)}" aria-expanded="${expandedSession === key}"><span class="session-icon">${icon("activity")}</span><span class="session-title"><strong>${h(p?.name ?? "Unknown project")}</strong><small>${new Date(latest).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${first.sessionId ? "" : " · Unlinked calls"}${first.source === "cli" ? " · CLI" : first.source === "jetbrains" ? " · JetBrains" : ""}</small></span><span class="session-count">${count(t.calls, "call")}</span><strong class="session-usage">${h(costLabel(costs(list)))}<small>${compact(t.tokens)} tokens</small></strong>${icon("chevron")}</button>${
+            const latest = list.reduce(
+              (time, call) => Math.max(time, call.timestamp),
+              0,
+            );
+            return `<div class="session"><button class="session-toggle" data-focus="session-${h(key)}" data-session="${h(key)}" aria-expanded="${expandedSession === key}"><span class="session-icon">${icon("activity")}</span><span class="session-title"><strong>${h(p?.name ?? "Unknown project")}</strong><small>${new Date(latest).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit" })}${first.sessionId ? "" : " · Unlinked call"}${first.source === "cli" ? " · CLI" : first.source === "jetbrains" ? " · JetBrains" : ""}</small></span><span class="session-count">${callCount(t)}</span><strong class="session-usage">${h(costLabel(costs(list)))}<small>${knownTokenLabel(list, t.tokens, "total")} observed tokens</small></strong>${icon("chevron")}</button>${
               expandedSession === key
                 ? `<div class="session-detail">${byModel(list)
                     .map(
                       (m) =>
-                        `<div><span>${h(m.model)}</span><span>${count(m.calls, "call")} · ${number(m.input)} in / ${number(m.output)} out · ${h(costLabel(costs(list.filter((c) => c.model === m.model))))}</span></div>`,
+                        `<div><span>${h(m.model)}</span><span>${callCount(m)} · ${list.filter((c) => c.model === m.model).every((c) => c.input === undefined) ? "—" : number(m.input)} in / ${list.filter((c) => c.model === m.model).every((c) => c.output === undefined) ? "—" : number(m.output)} out · ${h(costLabel(costs(list.filter((c) => c.model === m.model))))}</span></div>`,
                     )
                     .join(
                       "",
-                    )}<p>${[t.failed ? count(t.failed, "failed call") : "", t.missingUsage ? `${count(t.missingUsage, "call")} missing token data` : "", costDescription(costs(list))].filter(Boolean).map(h).join(" · ")}</p></div>`
+                    )}<p>${[t.failed ? count(t.failed, "failed entry") : "", t.missingUsage ? `${count(t.missingUsage, "entry")} missing token data` : "", costDescription(costs(list))].filter(Boolean).map(h).join(" · ")}</p></div>`
                 : ""
             }</div>`;
           })
           .join("")
-  }${sorted.length > 100 ? '<p class="muted">Latest 100 sessions. Export includes the full period.</p>' : ""}</section>`;
+  }${sorted.length > visibleSessions ? `<div class="activity-more"><button class="button" data-action="moreSessions" data-focus="moreSessions">Show next ${Math.min(100, sorted.length - visibleSessions)} sessions</button><span>${Math.min(visibleSessions, sorted.length)} of ${sorted.length} shown</span></div>` : ""}</section>`;
 }
 
 function about() {
   return `<div class="about-grid"><section class="card about-card"><h2>Stored data</h2><p>Model names, tokens, costs, timing and session IDs are stored on the extension host. Prompts, responses, code and tool arguments are excluded.</p></section><section class="card about-card"><h2>Projects</h2><p>Each VS Code workspace has separate usage history. Clones and worktrees count separately. Multi-root workspaces count as one workspace group.</p><p>Copilot CLI usage is attributed by the session's working directory; sessions outside tracked workspaces group under Copilot CLI.</p></section><section class="card about-card"><h2>Token counts</h2><p>Completed Copilot Chat calls only. Duplicates are removed; missing values stay unknown. Cache reads are part of input tokens. Inline completions and usage on other hosts are excluded.</p><p>Copilot CLI session-state entries count per model request and appear after a CLI session ends.</p></section><section class="card about-card"><h2>History</h2><p>Collection starts after setup and reload; earlier usage is unavailable. Updates may take a few seconds. Stopping tracking keeps your history.</p><p>To delete history, stop tracking, reload, then delete hoosage’s project storage.</p></section></div>
-  <section class="card pricing-details"><h2>Costs in USD</h2><p>Reported Copilot credits take priority: 1 credit = $0.01. ≈ marks an estimate; + marks a subtotal with unpriced calls.</p><p>Estimates use the <a href="${PRICING_SOURCE}">Copilot price table</a> from ${PRICING_DATE}, including cache rates and long-context tiers. These rates also apply to older calls. Missing cache details are assumed zero. Unknown models and incomplete token counts stay unpriced.</p><p>Usage value excludes subscription fees, allowances, discounts and taxes. It is not your bill.</p><p class="pricing-coverage">${h(costDescription(costs(selectedCalls())))}</p></section>
-  <section class="card connection-card"><div><h2>Tracking</h2><p>${demo ? "Preview · Sample data" : h(data!.statusDetail)}</p>${data!.skippedLines ? `<p>${count(data!.skippedLines, "invalid record")} skipped.</p>` : ""}<p>Setup applies to all VS Code windows. Stop tracking before uninstalling to restore the previous Copilot settings.</p></div><div class="connection-actions">${demo ? action("Exit preview", "exitDemo") : data!.status === "active" || data!.status === "waiting" ? action("Stop tracking", "disable") : data!.status === "reload" ? action("Reload window", "reload", true) : action("Enable tracking", "enable", true)}<button class="button" data-action="settings">Settings</button></div></section>`;
+  <section class="card pricing-details"><h2>Costs in USD</h2><p>Reported Copilot credits take priority: 1 credit = $0.01. ≈ marks an estimate; + marks a subtotal with unpriced usage.</p><p>Estimates use the <a href="${PRICING_SOURCE}">Copilot price table</a> from ${PRICING_DATE}, including cache rates and long-context tiers. These rates also apply to older calls. Missing cache details are assumed zero. Unknown models, incomplete token counts and CLI aggregates that could cross long-context tiers stay unpriced.</p><p>Usage value excludes subscription fees, allowances, discounts and taxes. It is not your bill.</p><p class="pricing-coverage">${h(costDescription(costs(selectedCalls())))}</p></section>
+  <section class="card connection-card"><div><h2>Tracking</h2><p>${demo ? "Preview · Sample data" : h(data!.statusDetail)}</p>${data!.skippedLines ? `<p>${count(data!.skippedLines, "invalid record")} skipped.</p>` : ""}<p>Setup applies to all VS Code windows. Stop tracking before uninstalling to restore the previous Copilot settings.</p></div><div class="connection-actions">${demo ? action("Exit preview", "exitDemo") : data!.status === "reload" ? action("Reload window", "reload", true) : data!.canStopTracking || data!.status === "active" || data!.status === "waiting" ? action("Stop tracking", "disable") : action("Enable tracking", "enable", true)}<button class="button" data-action="settings">Settings</button></div></section>`;
 }
 
 root.addEventListener("click", (event) => {
@@ -260,6 +288,7 @@ root.addEventListener("click", (event) => {
   }
   if (button.dataset.days) {
     days = Number(button.dataset.days);
+    visibleSessions = 100;
     save();
     render();
     return;
@@ -267,6 +296,7 @@ root.addEventListener("click", (event) => {
   if (button.dataset.project) {
     projectId = button.dataset.project;
     page = "overview";
+    visibleSessions = 100;
     save();
     render();
     window.scrollTo({ top: 0 });
@@ -281,6 +311,11 @@ root.addEventListener("click", (event) => {
     return;
   }
   const action = button.dataset.action;
+  if (action === "moreSessions") {
+    visibleSessions += 100;
+    render();
+    return;
+  }
   if (action === "demo") {
     demo = true;
     data = demoSnapshot();
@@ -328,6 +363,7 @@ root.addEventListener("change", (event) => {
   const select = event.target as HTMLSelectElement;
   if (select.id === "project") {
     projectId = select.value;
+    visibleSessions = 100;
     save();
     render();
   }

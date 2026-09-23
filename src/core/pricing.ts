@@ -106,6 +106,14 @@ export function callCost(call: UsageCall): CallCost {
     return { source: "unavailable", reason: "No verified model price" };
   if (!validCount(call.input) || !validCount(call.output))
     return { source: "unavailable", reason: "Incomplete token counts" };
+  if (
+    base.long &&
+    call.source &&
+    call.source !== "chat" &&
+    call.requests !== 1 &&
+    call.input > base.threshold!
+  )
+    return { source: "unavailable", reason: "Per-request context unknown" };
   const read = call.cacheRead ?? 0;
   const write = call.cacheWrite ?? 0;
   if (!validCount(read) || !validCount(write) || read + write > call.input)
@@ -183,9 +191,9 @@ export function costLabel(cost: CostSummary): string {
 
 export function costDescription(cost: CostSummary): string {
   return (
-    `${cost.reportedCalls} reported · ${cost.estimatedCalls} estimated · ${cost.unpricedCalls} unpriced` +
+    `Usage records: ${cost.reportedCalls} reported · ${cost.estimatedCalls} estimated · ${cost.unpricedCalls} unpriced` +
     (cost.assumedCacheCalls
-      ? ` · Cache detail missing for ${cost.assumedCacheCalls} calls`
+      ? ` · Cache detail missing for ${cost.assumedCacheCalls} records`
       : "")
   );
 }

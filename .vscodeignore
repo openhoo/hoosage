@@ -1,5 +1,6 @@
 .vscode/**
 .github/**
+.hoolicy/**
 .test-work/**
 .preview/**
 .npm/**
@@ -14,3 +15,7 @@ tsconfig.json
 package-lock.json
 .gitignore
 AGENTS.md
+hoolicy.yaml
+hoolicy.lock
+hooray-policy.yaml
+hooversion.yaml

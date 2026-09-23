@@ -1036,6 +1036,17 @@ footer svg {
   color: var(--faint);
   margin-top: 10px;
 }
+.activity-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 20px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
 body.vscode-light {
   color-scheme: light;
   --bg: #f5f7fb;

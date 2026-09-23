@@ -40,6 +40,7 @@ export interface Snapshot {
   currentProjectId?: string;
   status: TrackingStatus;
   statusDetail: string;
+  canStopTracking?: boolean;
   updatedAt: number;
   skippedLines: number;
   errors: string[];
@@ -48,6 +49,7 @@ export interface Snapshot {
 
 export interface Totals {
   calls: number;
+  missingRequests: number;
   input: number;
   output: number;
   tokens: number;

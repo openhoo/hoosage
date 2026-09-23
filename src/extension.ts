@@ -84,25 +84,24 @@ export async function activate(context: vscode.ExtensionContext) {
   };
   let refreshPromise: Promise<Snapshot> | undefined;
   let needsReload = false;
+  let reloadPromptVersion = 0;
   let changingSettings = false;
   let collector: Collector | undefined;
   let collectorError: string | undefined;
   let connection: { port: number; token: string } | undefined;
-  if (current) {
-    try {
-      const saved = JSON.parse(
-        await readFile(join(storage, "collector.json"), "utf8"),
-      );
-      if (
-        Number.isInteger(saved.port) &&
-        saved.port > 1023 &&
-        saved.port < 65536 &&
-        /^[a-f0-9]{48}$/.test(saved.token)
-      )
-        connection = saved;
-    } catch {
-      /* A project is unconfigured until the user enables it. */
-    }
+  try {
+    const saved = JSON.parse(
+      await readFile(join(storage, "collector.json"), "utf8"),
+    );
+    if (
+      Number.isInteger(saved.port) &&
+      saved.port > 1023 &&
+      saved.port < 65536 &&
+      /^[a-f0-9]{48}$/.test(saved.token)
+    )
+      connection = saved;
+  } catch {
+    /* A profile is unconfigured until the user enables tracking. */
   }
   let registrationError: string | undefined;
   if (current) {
@@ -147,6 +146,9 @@ export async function activate(context: vscode.ExtensionContext) {
       : undefined;
   const config = () =>
     vscode.workspace.getConfiguration("github.copilot.chat.otel");
+  const canStopTracking = () =>
+    Boolean(context.globalState.get(BACKUP)) &&
+    config().get("enabled") === true;
 
   async function ensureCollector(force = false) {
     if (!connection) {
@@ -204,7 +206,9 @@ export async function activate(context: vscode.ExtensionContext) {
   function blocker(): string | undefined {
     if (registrationError) return registrationError;
     if (!current || !folders.length)
-      return "Open a project folder to enable tracking.";
+      return canStopTracking()
+        ? "Tracking is enabled for other VS Code windows. Open a project folder to view usage, or stop tracking here."
+        : "Open a project folder to enable tracking.";
     // Newer VS Code builds bundle Copilot without exposing a separate extension
     // object. Feature-detect its registered setting instead of an extension ID.
     if (config().inspect("otlpEndpoint")?.defaultValue === undefined)
@@ -329,6 +333,7 @@ export async function activate(context: vscode.ExtensionContext) {
       currentProjectId: current?.id,
       status,
       statusDetail,
+      canStopTracking: canStopTracking(),
       updatedAt: Date.now(),
       skippedLines:
         [...tailers.values()].reduce((n, t) => n + t.skippedLines, 0) +
@@ -377,13 +382,21 @@ export async function activate(context: vscode.ExtensionContext) {
 
   async function reloadPrompt() {
     needsReload = true;
+    const version = ++reloadPromptVersion;
     await refresh();
-    const answer = await vscode.window.showInformationMessage(
-      "hoosage: Reload the window to apply Copilot tracking settings.",
-      "Reload window",
-    );
-    if (answer)
-      await vscode.commands.executeCommand("workbench.action.reloadWindow");
+    void Promise.resolve(
+      vscode.window.showInformationMessage(
+        "hoosage: Reload the window to apply Copilot tracking settings.",
+        "Reload window",
+      ),
+    )
+      .then(async (answer) => {
+        if (answer && version === reloadPromptVersion)
+          await vscode.commands.executeCommand("workbench.action.reloadWindow");
+      })
+      .catch(() => {
+        /* The prompt is optional; the dashboard still exposes Reload window. */
+      });
   }
 
   async function enable() {
@@ -471,7 +484,7 @@ export async function activate(context: vscode.ExtensionContext) {
   async function restoreSettings() {
     const backup =
       context.globalState.get<Record<string, { value?: unknown }>>(BACKUP);
-    if (!backup || !current) return;
+    if (!backup) return;
     const owned: Record<string, unknown> = {
       enabled: true,
       exporterType: "otlp-http",

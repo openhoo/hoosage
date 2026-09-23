@@ -67,6 +67,25 @@ test("long-context rates switch per request strictly above the model threshold",
   );
 });
 
+test("aggregated CLI tokens cannot select a per-request long-context tier", () => {
+  const aggregate = call({
+    source: "cli",
+    model: "GPT-5.4",
+    input: 500_000,
+    output: 10_000,
+    cacheRead: 0,
+    cacheWrite: 0,
+    requests: 2,
+  });
+  assert.deepEqual(callCost(aggregate), {
+    source: "unavailable",
+    reason: "Per-request context unknown",
+  });
+  assert.equal(callCost({ ...aggregate, input: 200_000 }).source, "estimated");
+  assert.equal(callCost({ ...aggregate, requests: 1 }).source, "estimated");
+  assert.equal(callCost({ ...aggregate, nanoAiu: 100_000_000_000 }).usd, 1);
+});
+
 test("exact documented aliases resolve without guessing unknown models or modes", () => {
   for (const model of [
     "Claude Sonnet 4.6",

@@ -10,6 +10,7 @@ import {
   JETBRAINS_PROJECT_ID,
   folderPathHash,
 } from "../src/core/cli";
+import { exportCsv, totals } from "../src/core/analytics";
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -32,7 +33,12 @@ const shutdown = (
   timestamp: string,
   modelMetrics: Record<string, unknown>,
 ) =>
-  JSON.stringify({ type: "session.shutdown", id, timestamp, data: { modelMetrics } });
+  JSON.stringify({
+    type: "session.shutdown",
+    id,
+    timestamp,
+    data: { modelMetrics },
+  });
 
 const metrics = (
   inputTokens: number,
@@ -134,6 +140,55 @@ test("cumulative shutdown metrics emit only the increment on resume", async () =
     assert.equal(inc.requests, 2);
     // First entry is untouched by the later cumulative snapshot.
     assert.equal(scanner.calls.get("cli:sess-2:e1:gpt-5")!.input, 1000);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("missing CLI counters stay unknown across cumulative snapshots and CSV export", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "sess-partial");
+    await writeFile(
+      file,
+      [
+        shutdown("e1", "2026-09-22T10:05:00.000Z", {
+          "gpt-5.4": {
+            usage: { inputTokens: 100, outputTokens: 10 },
+            requests: { count: 1 },
+          },
+        }),
+        shutdown("e2", "2026-09-22T10:06:00.000Z", {
+          "gpt-5.4": {
+            usage: { inputTokens: 150, outputTokens: 20, cacheReadTokens: 5 },
+          },
+        }),
+        shutdown("e3", "2026-09-22T10:07:00.000Z", {
+          "gpt-5.4": {
+            usage: { outputTokens: 25, cacheReadTokens: 7 },
+            requests: { count: 3 },
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "project");
+    const first = scanner.calls.get("cli:sess-partial:e1:gpt-5.4")!;
+    const second = scanner.calls.get("cli:sess-partial:e2:gpt-5.4")!;
+    const third = scanner.calls.get("cli:sess-partial:e3:gpt-5.4")!;
+    assert.equal(first.cacheRead, undefined);
+    assert.equal(first.cacheWrite, undefined);
+    assert.equal(second.input, 50);
+    assert.equal(second.requests, undefined);
+    assert.equal(third.input, undefined);
+    assert.equal(third.output, 5);
+    assert.equal(third.cacheRead, 2);
+    assert.equal(third.requests, 2);
+    assert.equal(totals([...scanner.calls.values()]).calls, 3);
+    assert.equal(totals([...scanner.calls.values()]).missingRequests, 1);
+    assert.equal(totals([...scanner.calls.values()]).missingUsage, 1);
+    const csv = exportCsv([second]);
+    assert.ok(csv.includes('"cli",""\r\n'));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -281,7 +336,11 @@ test("id-less shutdowns in the same millisecond do not overwrite each other", as
     const file = await sessionDir(dir, "sess-6");
     const ts = "2026-09-22T10:05:00.000Z";
     const noId = (modelMetrics: Record<string, unknown>) =>
-      JSON.stringify({ type: "session.shutdown", timestamp: ts, data: { modelMetrics } });
+      JSON.stringify({
+        type: "session.shutdown",
+        timestamp: ts,
+        data: { modelMetrics },
+      });
     await writeFile(
       file,
       noId({ "gpt-5": metrics(100, 10, 0, 0, 1) }) +
@@ -338,7 +397,9 @@ test("JetBrains cwd attribution uses workspace.yaml when events lack context", a
       }) + "\n",
     );
     const scanner = new CliUsageScanner(dir);
-    await scanner.poll((cwd) => (cwd === "/work/myproj" ? "proj-jb" : undefined));
+    await scanner.poll((cwd) =>
+      cwd === "/work/myproj" ? "proj-jb" : undefined,
+    );
     const call = [...scanner.calls.values()][0]!;
     assert.equal(call.source, "jetbrains");
     assert.equal(call.projectId, "proj-jb");
@@ -368,7 +429,9 @@ test("session.resume updates cwd attribution like session.start", async () => {
         "\n",
     );
     const scanner = new CliUsageScanner(dir);
-    await scanner.poll((cwd) => (cwd === "/work/resumed" ? "proj-r" : undefined));
+    await scanner.poll((cwd) =>
+      cwd === "/work/resumed" ? "proj-r" : undefined,
+    );
     assert.equal([...scanner.calls.values()][0]!.projectId, "proj-r");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -394,7 +457,9 @@ test("workspace.yaml written after events re-tags emitted calls", async () => {
       join(dir, "sess-late", "workspace.yaml"),
       "client_name: copilot-intellij\ncwd: /work/late\n",
     );
-    await scanner.poll((cwd) => (cwd === "/work/late" ? "proj-late" : undefined));
+    await scanner.poll((cwd) =>
+      cwd === "/work/late" ? "proj-late" : undefined,
+    );
     call = [...scanner.calls.values()][0]!;
     assert.equal(call.source, "jetbrains");
     assert.equal(call.projectId, "proj-late");

@@ -110,14 +110,12 @@ export async function startCollector(
       return;
     }
     if (req.method === "GET" && req.url === `${prefix}/health`) {
-      res
-        .writeHead(200, { "content-type": "application/json" })
-        .end(
-          JSON.stringify({
-            projectId: config.projectId,
-            protocol: config.route ? 2 : 1,
-          }),
-        );
+      res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          projectId: config.projectId,
+          protocol: config.route ? 2 : 1,
+        }),
+      );
       return;
     }
     const validPath = [
@@ -162,21 +160,27 @@ export async function startCollector(
         body = gunzipSync(body, { maxOutputLength: LIMIT });
       if (req.url === `${prefix}/v1/traces`) {
         const grouped = new Map<string, UsageCall[]>();
+        const routed = new Map<
+          string,
+          { projectId: string; file: string } | undefined
+        >();
         for (const span of decodeTraces(body, contentType)) {
           const sessionId = (span as { windowSessionId?: unknown })
             .windowSessionId;
-          const target = config.route
-            ? typeof sessionId === "string"
-              ? await config.route(sessionId)
-              : undefined
-            : config;
+          let target: { projectId: string; file: string } | undefined = config;
+          if (config.route) {
+            if (typeof sessionId !== "string") continue;
+            if (!routed.has(sessionId))
+              routed.set(sessionId, await config.route(sessionId));
+            target = routed.get(sessionId);
+          }
           if (!target) continue;
           const call = parseSpan(span, target.projectId);
-          if (call)
-            grouped.set(target.file, [
-              ...(grouped.get(target.file) ?? []),
-              call,
-            ]);
+          if (call) {
+            const calls = grouped.get(target.file);
+            if (calls) calls.push(call);
+            else grouped.set(target.file, [call]);
+          }
         }
         for (const [file, calls] of grouped) {
           const lines = calls

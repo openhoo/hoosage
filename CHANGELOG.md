@@ -18,11 +18,6 @@
 
 - track Copilot CLI usage from session-state files (dd1c7e4)
 
-## Unreleased
-
-- Track Copilot CLI usage from local session-state files: per-model-request token deltas recorded when a session ends, attributed by the session's working directory, with unmatched sessions grouped under "Copilot CLI".
-- Track JetBrains Copilot usage: sessions created by the JetBrains plugin (`client_name: copilot-intellij` in `workspace.yaml`) are labelled JetBrains, attributed by the session's working directory, and grouped under "Copilot (JetBrains)" when no workspace matches.
-
 ## 0.4.0 (2026-09-22)
 
 ### Features

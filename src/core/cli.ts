@@ -30,11 +30,11 @@ export function folderPathHash(fsPath: string): string {
 }
 
 interface ModelSnapshot {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  requests: number;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  requests?: number;
 }
 
 interface FileState {
@@ -84,10 +84,13 @@ function parseWorkspace(content: string): {
   return { clientName: field("client_name"), cwd: field("cwd") };
 }
 
-const num = (value: unknown): number =>
+const num = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
-    : 0;
+    : undefined;
+
+const deltaCount = (current?: number, previous?: number) =>
+  current === undefined ? undefined : Math.max(0, current - (previous ?? 0));
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -124,15 +127,17 @@ export class CliUsageScanner {
     if (this.busy) return;
     this.busy = true;
     try {
-      const rootInfo = await stat(this.root).catch(() => undefined);
+      const rootInfo = await stat(this.root).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+          return undefined;
+        throw error;
+      });
       this.detected = rootInfo?.isDirectory() === true;
       if (!this.detected) {
         this.caughtUp = true;
         return;
       }
-      const entries = await readdir(this.root, { withFileTypes: true }).catch(
-        () => [] as never[],
-      );
+      const entries = await readdir(this.root, { withFileTypes: true });
       let caughtUp = true;
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
@@ -151,7 +156,10 @@ export class CliUsageScanner {
   ): Promise<boolean> {
     const path = join(this.root, sessionId, "events.jsonl");
     let st = this.files.get(sessionId) ?? freshState();
-    const info = await stat(path).catch(() => undefined);
+    const info = await stat(path).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
     if (!info?.isFile()) return true;
     if (st.inode !== info.ino || info.size < st.offset) {
       // Rotation or truncation: emitted calls and cumulative baselines
@@ -167,20 +175,21 @@ export class CliUsageScanner {
       const content = await readFile(
         join(this.root, sessionId, "workspace.yaml"),
         "utf8",
-      ).catch(() => undefined);
+      ).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+          return undefined;
+        throw error;
+      });
       st.workspace = content === undefined ? null : parseWorkspace(content);
       if (st.workspace) {
-        if (st.cwd === undefined && st.workspace.cwd)
-          st.cwd = st.workspace.cwd;
+        if (st.cwd === undefined && st.workspace.cwd) st.cwd = st.workspace.cwd;
         // Re-tag calls emitted before the file appeared.
         st.projectId = undefined;
         for (const id of st.emitted) {
           const call = this.calls.get(id);
           if (!call) continue;
           call.source =
-            st.workspace.clientName === JETBRAINS_CLIENT
-              ? "jetbrains"
-              : "cli";
+            st.workspace.clientName === JETBRAINS_CLIENT ? "jetbrains" : "cli";
           call.projectId = this.projectIdFor(st, resolve);
         }
       }
@@ -188,7 +197,10 @@ export class CliUsageScanner {
     const length = Math.min(BATCH, info.size - st.offset);
     const caughtUp = info.size <= st.offset + length;
     if (!length) return caughtUp;
-    const file = await open(path, "r").catch(() => undefined);
+    const file = await open(path, "r").catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
     if (!file) return false;
     try {
       const buffer = Buffer.alloc(length);
@@ -297,16 +309,19 @@ export class CliUsageScanner {
         continue;
       const baseline = st.baselines.get(model);
       const delta: ModelSnapshot = {
-        input: Math.max(0, snapshot.input - (baseline?.input ?? 0)),
-        output: Math.max(0, snapshot.output - (baseline?.output ?? 0)),
-        cacheRead: Math.max(0, snapshot.cacheRead - (baseline?.cacheRead ?? 0)),
-        cacheWrite: Math.max(
-          0,
-          snapshot.cacheWrite - (baseline?.cacheWrite ?? 0),
-        ),
-        requests: Math.max(0, snapshot.requests - (baseline?.requests ?? 0)),
+        input: deltaCount(snapshot.input, baseline?.input),
+        output: deltaCount(snapshot.output, baseline?.output),
+        cacheRead: deltaCount(snapshot.cacheRead, baseline?.cacheRead),
+        cacheWrite: deltaCount(snapshot.cacheWrite, baseline?.cacheWrite),
+        requests: deltaCount(snapshot.requests, baseline?.requests),
       };
-      st.baselines.set(model, snapshot);
+      st.baselines.set(model, {
+        input: snapshot.input ?? baseline?.input,
+        output: snapshot.output ?? baseline?.output,
+        cacheRead: snapshot.cacheRead ?? baseline?.cacheRead,
+        cacheWrite: snapshot.cacheWrite ?? baseline?.cacheWrite,
+        requests: snapshot.requests ?? baseline?.requests,
+      });
       if (
         !delta.input &&
         !delta.output &&

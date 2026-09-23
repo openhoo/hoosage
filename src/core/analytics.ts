@@ -8,7 +8,19 @@ export function totals(calls: UsageCall[]): Totals {
     .map((c) => c.durationMs)
     .filter((d): d is number => d !== undefined);
   return {
-    calls: calls.reduce((n, c) => n + (c.requests ?? 1), 0),
+    calls: calls.reduce(
+      (n, c) =>
+        n +
+        (c.source === "cli" || c.source === "jetbrains"
+          ? (c.requests ?? 0)
+          : 1),
+      0,
+    ),
+    missingRequests: calls.filter(
+      (c) =>
+        (c.source === "cli" || c.source === "jetbrains") &&
+        c.requests === undefined,
+    ).length,
     input,
     output,
     tokens: input + output,
@@ -75,6 +87,30 @@ export function byModel(calls: UsageCall[]) {
     .sort((a, b) => b.tokens - a.tokens || b.calls - a.calls);
 }
 
+/** An unlinked span is a single call, not a project-wide session. */
+export function groupSessions(calls: UsageCall[]) {
+  const groups = new Map<string, UsageCall[]>();
+  for (const call of calls) {
+    const key = JSON.stringify([
+      call.projectId,
+      call.source ?? "chat",
+      call.sessionId === undefined ? "call" : "session",
+      call.sessionId ?? call.id,
+    ]);
+    const group = groups.get(key);
+    if (group) group.push(call);
+    else groups.set(key, [call]);
+  }
+  return [...groups]
+    .map(([key, group]) => ({
+      key,
+      group,
+      latest: group.reduce((time, call) => Math.max(time, call.timestamp), 0),
+    }))
+    .sort((a, b) => b.latest - a.latest)
+    .map(({ key, group }): [string, UsageCall[]] => [key, group]);
+}
+
 const csvCell = (value: unknown): string => {
   let text = value === undefined ? "" : String(value);
   if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
@@ -122,7 +158,7 @@ export function exportCsv(calls: UsageCall[]): string {
             (cost.assumedCache ? "Missing cache detail assumed zero" : ""),
           cost.source === "estimated" ? PRICING_DATE : undefined,
           c.source ?? "chat",
-          c.requests ?? 1,
+          c.source === "cli" || c.source === "jetbrains" ? c.requests : 1,
         ];
       }),
     ]
