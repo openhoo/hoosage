@@ -21,6 +21,9 @@ import {
   localDateKey,
   periodEnd,
   shiftLocalDate,
+  customDateBounds,
+  filterCallsBetween,
+  usageBuckets,
   startOfRange,
 } from "../src/core/analytics";
 import { startCollector, storedSpan } from "../src/core/collector";
@@ -296,6 +299,43 @@ test("calendar can browse and export a completed period years in the past", () =
   assert.equal(shiftLocalDate("2025-01-01", -1), "2024-12-31");
   assert.equal(periodEnd(now, "2025-02-29"), undefined);
   assert.equal(periodEnd(now, "2027-01-01"), undefined);
+});
+
+test("custom date ranges use inclusive local days for filtering and chart buckets", () => {
+  const now = new Date(2026, 8, 23, 12).getTime();
+  const bounds = customDateBounds(now, "2025-05-20", "2025-07-06")!;
+  assert.equal(bounds.days, 48);
+  assert.equal(bounds.start, new Date(2025, 4, 20).getTime());
+  assert.equal(bounds.end, new Date(2025, 6, 6, 23, 59, 59, 999).getTime());
+  const call = parseSpan(span(), "a")!;
+  const selected = [
+    { ...call, id: "before", timestamp: bounds.start - 1 },
+    { ...call, id: "start", timestamp: bounds.start },
+    { ...call, id: "end", timestamp: bounds.end },
+    { ...call, id: "after", timestamp: bounds.end + 1 },
+    { ...call, id: "other", projectId: "b", timestamp: bounds.start },
+  ];
+  assert.deepEqual(
+    filterCallsBetween(selected, "a", bounds).map((entry) => entry.id),
+    ["start", "end"],
+  );
+  const filtered = filterCallsBetween(selected, "all", bounds);
+  const { interval, buckets } = usageBuckets(filtered, bounds);
+  assert.equal(interval, 7);
+  assert.equal(buckets.length, 7);
+  assert.equal(buckets.reduce((sum, bucket) => sum + bucket.tokens, 0), totals(filtered).tokens);
+  assert.equal(buckets[0]!.start, bounds.start);
+  assert.equal(buckets.at(-1)!.end, bounds.end);
+  assert.equal(customDateBounds(now, "2025-07-07", "2025-07-06"), undefined);
+  assert.equal(customDateBounds(now, "2025-02-29", "2025-03-01"), undefined);
+  assert.equal(customDateBounds(now, "2025-07-06", "2027-01-01"), undefined);
+});
+
+test("custom range counts calendar days across daylight saving changes", () => {
+  const now = new Date(2026, 3, 5, 12).getTime();
+  const bounds = customDateBounds(now, "2026-03-28", "2026-03-30")!;
+  assert.equal(bounds.days, 3);
+  assert.equal(usageBuckets([], bounds).buckets.length, 3);
 });
 
 test("unlinked calls remain separate and session IDs cannot cross projects or sources", () => {

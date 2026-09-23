@@ -27,8 +27,10 @@ import {
   type Collector,
 } from "./core/collector";
 import {
+  customDateBounds,
   exportCsv,
   filterCalls,
+  filterCallsBetween,
   localDateKey,
   periodEnd,
   startOfRange,
@@ -837,13 +839,20 @@ export async function activate(context: vscode.ExtensionContext) {
     days = 30,
     format = "csv",
     endDate?: string,
+    startDate?: string,
   ) {
-    const end = periodEnd(Date.now(), endDate);
-    if (end === undefined) return;
-    const calls = filterCalls(snapshot.calls, projectId, days, end);
+    const now = Date.now();
+    const end = periodEnd(now, endDate);
+    const bounds = startDate
+      ? customDateBounds(now, startDate, endDate ?? "")
+      : end === undefined
+        ? undefined
+        : { start: startOfRange(days, end), end, days };
+    if (!bounds) return;
+    const calls = filterCallsBetween(snapshot.calls, projectId, bounds);
     const uri = await vscode.window.showSaveDialog({
       defaultUri: vscode.Uri.file(
-        `hoosage-${localDateKey(startOfRange(days, end))}-to-${localDateKey(end)}.${format}`,
+        `hoosage-${localDateKey(bounds.start)}-to-${localDateKey(bounds.end)}.${format}`,
       ),
       filters: format === "csv" ? { CSV: ["csv"] } : { JSON: ["json"] },
     });
@@ -931,9 +940,13 @@ export async function activate(context: vscode.ExtensionContext) {
                 (m.projectId === "all" ||
                   snapshot.projects.some((p) => p.id === m.projectId)) &&
                 [7, 14, 30].includes(Number(m.days)) &&
-                (m.endDate === undefined ||
-                  (typeof m.endDate === "string" &&
-                    periodEnd(Date.now(), m.endDate) !== undefined)) &&
+                (m.startDate === undefined
+                  ? m.endDate === undefined ||
+                    (typeof m.endDate === "string" &&
+                      periodEnd(Date.now(), m.endDate) !== undefined)
+                  : typeof m.startDate === "string" &&
+                    typeof m.endDate === "string" &&
+                    customDateBounds(Date.now(), m.startDate, m.endDate) !== undefined) &&
                 ["csv", "json"].includes(String(m.format))
               )
                 await exportUsage(
@@ -941,6 +954,7 @@ export async function activate(context: vscode.ExtensionContext) {
                   Number(m.days),
                   String(m.format),
                   m.endDate as string | undefined,
+                  m.startDate as string | undefined,
                 );
               break;
           }
