@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 (2026-09-23)
+
+### Features
+
+- **hoosage:** index local projects automatically (#12) (18c992b)
+
 ## 0.7.0 (2026-09-23)
 
 ### Features
