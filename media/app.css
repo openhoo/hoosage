@@ -354,6 +354,7 @@ h1 span {
   color: var(--muted);
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
 }
 .project-picker {
   display: flex;
@@ -785,6 +786,99 @@ h1 span {
   background: var(--panel);
   overflow: hidden;
 }
+.section-eyebrow {
+  display: block;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+}
+.projects-intro,
+.about-hero {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(115deg, var(--accent-bg), var(--panel) 64%);
+  margin-bottom: 18px;
+}
+.projects-intro-icon,
+.about-hero-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border: 1px solid var(--accent);
+  border-radius: 13px;
+  background: var(--panel);
+  color: var(--accent);
+}
+.projects-intro-icon svg,
+.about-hero-icon svg {
+  width: 23px;
+  height: 23px;
+}
+.projects-intro-copy,
+.about-hero > div:first-of-type {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.projects-intro h2,
+.about-hero h2 {
+  margin-top: 3px;
+  font-size: 21px;
+  letter-spacing: -0.03em;
+}
+.projects-intro p,
+.about-hero p {
+  max-width: 620px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.projects-intro-stats {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.projects-intro-stats > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 86px;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.projects-intro-stats strong {
+  color: var(--text);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.projects-intro-stats span {
+  color: var(--faint);
+  font-size: 11px;
+}
+.projects-heading {
+  border-bottom: 1px solid var(--line);
+}
+.projects-heading h2,
+.activity-heading h2 {
+  margin-top: 3px;
+  font-size: 17px;
+}
+.projects-card tbody tr:hover,
+.projects-card tbody tr:focus-within {
+  background: var(--panel-alt);
+}
+.project-cards {
+  display: none;
+}
 .card-heading {
   display: flex;
   align-items: center;
@@ -1160,27 +1254,34 @@ footer svg {
   text-align: center;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--panel);
-  padding: 45px 25px;
+  background: radial-gradient(circle at 50% -30%, var(--accent-bg), var(--panel) 58%);
+  padding: 46px 25px 48px;
 }
 .onboarding > svg {
-  width: 28px;
-  height: 28px;
+  width: 56px;
+  height: 56px;
+  padding: 14px;
+  border: 1px solid var(--accent);
+  border-radius: 15px;
+  background: var(--panel);
   color: var(--accent);
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+}
+.onboarding .section-eyebrow {
+  margin-bottom: 7px;
 }
 .onboarding h2 {
   font-size: 27px;
-  font-weight: 500;
+  font-weight: 650;
   letter-spacing: -0.8px;
-  margin: 10px 0;
+  margin: 0;
 }
 .onboarding p {
   max-width: 470px;
-  margin: 14px auto 25px;
+  margin: 10px auto 23px;
   font-size: 14px;
   color: var(--muted);
-  line-height: 1.8;
+  line-height: 1.65;
 }
 .onboarding-actions {
   display: flex;
@@ -1195,6 +1296,21 @@ footer svg {
   font-size: 14px;
   line-height: 1.8;
 }
+.mini-empty strong,
+.mini-empty span {
+  display: block;
+}
+.mini-empty strong {
+  color: var(--text);
+  font-size: 16px;
+}
+.mini-empty span {
+  max-width: 360px;
+  margin: 4px auto 0;
+}
+.mini-empty .button {
+  margin-top: 16px;
+}
 .mini-empty > svg {
   display: block;
   margin: 0 auto 15px;
@@ -1205,26 +1321,81 @@ footer svg {
 .about-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  gap: 16px;
+  align-items: stretch;
 }
 .about-card {
-  padding: 26px;
+  padding: 24px;
 }
-.about-card > svg {
-  height: 24px;
-  width: 24px;
+.about-hero-chips {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+.about-hero-chips span {
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.about-card-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+.about-card-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-alt);
   color: var(--accent);
-  margin-bottom: 18px;
+}
+.about-card-icon svg {
+  width: 17px;
+  height: 17px;
 }
 .about-card h2 {
-  font-size: 18px;
-  margin-bottom: 13px;
+  font-size: 17px;
+  margin-bottom: 10px;
 }
 .about-card p {
   color: var(--muted);
-  font-size: 14px;
-  line-height: 1.9;
-  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.65;
+  margin-top: 9px;
+  max-width: 65ch;
+}
+.about-section-heading h2 {
+  margin-top: 4px;
+  font-size: 18px;
+}
+.pricing-key {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 20px 0;
+}
+.pricing-key span {
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pricing-key strong {
+  color: var(--text);
+  white-space: nowrap;
 }
 .connection-card {
   display: flex;
@@ -1253,11 +1424,32 @@ footer svg {
 .session {
   border-top: 1px solid var(--line);
 }
-.session-toggle {
+.activity-day {
   display: flex;
   align-items: center;
-  gap: 17px;
-  padding: 18px 24px;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.activity-today {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 11px;
+}
+.session-toggle {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 14px;
+  padding: 15px 24px;
   width: 100%;
   border: 0;
   background: none;
@@ -1268,8 +1460,8 @@ footer svg {
   background: var(--panel-alt);
 }
 .session-icon {
-  width: 33px;
-  height: 33px;
+  width: 34px;
+  height: 34px;
   border: 1px solid var(--line);
   border-radius: 50%;
   display: flex;
@@ -1278,49 +1470,85 @@ footer svg {
   color: var(--accent);
 }
 .session-title {
-  flex: 1;
   min-width: 0;
 }
 .session-title strong {
   overflow-wrap: anywhere;
 }
-.session-title small {
-  display: block;
+.session-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
   color: var(--faint);
-  font-size: 12px;
-  margin-top: 3px;
+  font-size: 11px;
+  margin-top: 4px;
 }
-.session-count {
+.session-source {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-alt);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+.session-unlinked {
   color: var(--muted);
 }
-.session-toggle > strong {
-  min-width: 95px;
+.session-figures {
+  min-width: 155px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
-.session-toggle > strong > small {
+.session-figures > strong {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+}
+.session-figures > small {
+  display: block;
+  margin-top: 3px;
   color: var(--faint);
-  font-weight: 400;
+  font-size: 11px;
 }
-.session-toggle > svg {
+.session-chevron svg {
   width: 13px;
   height: 13px;
   color: var(--faint);
 }
-.session-toggle[aria-expanded="true"] > svg {
+.session-toggle[aria-expanded="true"] .session-chevron svg {
   transform: rotate(90deg);
 }
 .session-detail {
-  margin: 0 24px 20px 74px;
-  border-left: 1px solid var(--line);
-  padding: 4px 20px;
+  margin: 0 24px 16px 72px;
+  padding: 5px 15px 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--panel-alt);
   font-size: 13px;
   color: var(--muted);
 }
-.session-detail > div {
+.session-model {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  padding: 7px 0;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.session-model > span strong,
+.session-model > span small {
+  display: block;
+}
+.session-model > span strong,
+.session-model > strong {
+  color: var(--text);
+}
+.session-model > span small {
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 11px;
 }
 .session-detail p {
   font-size: 12px;
@@ -1416,6 +1644,14 @@ body.vscode-high-contrast-light .calendar-day.range-edge {
   background: var(--panel);
   color: var(--text);
 }
+body.vscode-high-contrast .projects-intro,
+body.vscode-high-contrast-light .projects-intro,
+body.vscode-high-contrast .about-hero,
+body.vscode-high-contrast-light .about-hero,
+body.vscode-high-contrast .onboarding,
+body.vscode-high-contrast-light .onboarding {
+  background: var(--panel);
+}
 body.vscode-high-contrast .featured .stat-number,
 body.vscode-high-contrast-light .featured .stat-number,
 body.vscode-high-contrast .featured .stat-label,
@@ -1496,6 +1732,24 @@ body.vscode-high-contrast-light .featured .stat-label {
   }
 }
 @media (max-width: 900px) {
+  .toolbar {
+    flex-wrap: wrap;
+  }
+  .toolbar-right {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .projects-intro,
+  .about-hero {
+    flex-wrap: wrap;
+  }
+  .projects-intro-stats {
+    margin-left: 66px;
+  }
+  .about-hero-chips {
+    margin-left: 66px;
+    flex-direction: row;
+  }
   .rail {
     width: 66px;
     padding: 25px 9px;
@@ -1562,6 +1816,113 @@ body.vscode-high-contrast-light .featured .stat-label {
   }
 }
 @media (max-width: 600px) {
+  .projects-intro,
+  .about-hero {
+    align-items: flex-start;
+    gap: 12px;
+    padding: 17px;
+  }
+  .projects-intro-icon,
+  .about-hero-icon {
+    width: 38px;
+    height: 38px;
+    flex-basis: 38px;
+    border-radius: 10px;
+  }
+  .projects-intro-icon svg,
+  .about-hero-icon svg {
+    width: 19px;
+    height: 19px;
+  }
+  .projects-intro h2,
+  .about-hero h2 {
+    font-size: 18px;
+  }
+  .projects-intro p,
+  .about-hero p {
+    font-size: 12px;
+  }
+  .projects-intro-stats,
+  .about-hero-chips {
+    width: 100%;
+    margin-left: 0;
+  }
+  .projects-intro-stats > div {
+    flex: 1 1 0;
+  }
+  .about-hero-chips {
+    flex-wrap: wrap;
+  }
+  .projects-card .table-scroll {
+    display: none;
+  }
+  .project-cards {
+    display: block;
+  }
+  .project-card {
+    padding: 15px 17px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .project-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .project-card .project-link {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .project-card .project-link > span:last-child {
+    min-width: 0;
+  }
+  .project-card .folder-icon {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+  }
+  .project-card-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin: 15px 0 12px;
+  }
+  .project-card-metrics > div {
+    min-width: 0;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-alt);
+  }
+  .project-card-metrics dt {
+    color: var(--faint);
+    font-size: 10px;
+    line-height: 1.2;
+    min-height: 24px;
+  }
+  .project-card-metrics dd {
+    margin: 3px 0 0;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .project-card-share {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px 10px;
+    color: var(--faint);
+    font-size: 11px;
+  }
+  .project-card-share strong {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .project-card-share progress {
+    grid-column: 1 / -1;
+    height: 5px;
+  }
   .rail {
     position: static;
     width: auto;
@@ -1803,10 +2164,16 @@ body.vscode-high-contrast-light .featured .stat-label {
     gap: 15px;
   }
   .about-card {
-    padding: 22px;
+    padding: 19px;
   }
   .about-card p {
     font-size: 13px;
+  }
+  .pricing-key {
+    grid-template-columns: 1fr;
+  }
+  .pricing-details {
+    padding: 19px;
   }
   .connection-card {
     padding: 22px;
@@ -1818,10 +2185,9 @@ body.vscode-high-contrast-light .featured .stat-label {
     padding: 35px 18px;
   }
   .onboarding > svg {
-    width: 28px;
-    height: 28px;
-    color: var(--accent);
-    margin-bottom: 12px;
+    width: 50px;
+    height: 50px;
+    padding: 12px;
   }
   .onboarding h2 {
     font-size: 23px;
@@ -1830,32 +2196,40 @@ body.vscode-high-contrast-light .featured .stat-label {
     font-size: 13px;
   }
   .session-toggle {
-    gap: 9px;
-    padding: 15px;
+    grid-template-columns: minmax(0, 1fr) minmax(94px, auto) 13px;
+    gap: 8px;
+    padding: 13px 15px;
   }
   .session-icon {
     display: none;
   }
-  .session-count {
-    display: none;
-  }
-  .session-toggle > strong {
-    font-size: 12px;
-    min-width: 75px;
-  }
   .session-title {
     font-size: 13px;
   }
-  .session-title small {
-    font-size: 12px;
+  .session-figures {
+    min-width: 0;
+    max-width: 135px;
+  }
+  .session-figures > strong {
+    font-size: 13px;
+  }
+  .session-figures > small {
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .activity-day {
+    padding: 9px 15px;
   }
   .session-detail {
     margin: 0 15px 15px;
-    padding: 3px 10px;
+    padding: 5px 10px;
   }
-  .session-detail > div {
-    flex-direction: column;
-    gap: 3px;
+  .session-model {
+    align-items: flex-start;
+  }
+  .session-model > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .small-tag {
     font-size: 12px;
@@ -1963,10 +2337,6 @@ body.vscode-high-contrast-light .featured .stat-label {
 .model-cost {
   font-size: 13px;
 }
-.session-usage small {
-  display: block;
-  margin-top: 3px;
-}
 .pricing-details {
   padding: 26px;
   margin: 20px 0;
@@ -2008,13 +2378,6 @@ body.vscode-light .demo-banner {
   .cost-stat .stat-number {
     font-size: 34px;
     margin: 16px 0;
-  }
-  .projects-card table {
-    min-width: 0;
-  }
-  .projects-card th:nth-child(2),
-  .projects-card td:nth-child(2) {
-    display: none;
   }
   .heading-actions {
     gap: 4px;

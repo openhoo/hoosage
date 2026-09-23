@@ -31,7 +31,7 @@ Want a look first? **Explore a preview** shows clearly labelled sample data. Sam
 - A dashboard and Activity Bar view with dark, light, high-contrast and narrow layouts.
 - Costs in USD for the overview, projects, models, sessions and status bar.
 - Observed input/output tokens, model calls, linked sessions and average call duration.
-- Usage charts with readable intervals for long periods, model shares and a project comparison table.
+- Usage charts with readable intervals for long periods, model shares and a project comparison that keeps every metric visible on narrow screens.
 - 7-, 14- and 30-day presets, a custom from/to calendar range, project selection and session drilldowns.
 - CSV export of the selected project and period, including cost source and price-table date; unknown values stay empty.
 - A status bar indicator for today's current-project usage.
@@ -48,15 +48,28 @@ Choose exact start and end dates, jump by month or year, or move the selected pe
 
 ### Project costs
 
-Compare each workspace's model calls, tokens and usage cost in US dollars. The **≈** marker identifies estimated costs.
+Compare each workspace's model calls, tokens and usage cost in US dollars. The **≈** marker identifies estimated costs. Narrow windows use cards that retain the call count and token share.
 
 ![Projects view comparing all sample projects by model calls, tokens, estimated USD cost and share of usage — sample data](media/screenshots/projects.png)
 
+<details>
+<summary><strong>Narrow project view</strong></summary>
+
+![Mobile project cards showing model calls, tokens, USD cost and token share — sample data](media/screenshots/projects-mobile.png)
+
+</details>
+
 ### Session activity
 
-Filter by project and date range, then expand a session to see its model, input/output tokens and cost details.
+Filter by project and date range. Sessions are grouped by day and labelled by source; expand one to see model, input/output tokens and cost details.
 
 ![Activity filtered to the docs project, with a session expanded to show model, token counts and estimated cost — sample data](media/screenshots/activity.png)
+
+### Usage details
+
+The details view explains local storage, project attribution, unknown measurements and cost estimates.
+
+![Usage details view with local privacy summary and clearly separated information cards — sample data](media/screenshots/usage-details.png)
 
 <details>
 <summary><strong>Light theme</strong></summary>
