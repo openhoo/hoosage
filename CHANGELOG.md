@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.2 (2026-09-23)
+
+### Bug Fixes
+
+- **hoosage:** repair tracking diagnostics and speed startup (#21) (ade4a1b)
+
 ## 0.8.1 (2026-09-23)
 
 ### Bug Fixes
