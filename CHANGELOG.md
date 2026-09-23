@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 (2026-09-23)
+
+### Features
+
+- **hoosage:** ship JetBrains IDE plugin (#10) (25fbfb7)
+
+### Other Changes
+
+- **hoosage:** parallelize checks and reuse verified VSIX (#8) (24d7342)
+
 ## 0.6.1 (2026-09-23)
 
 ### Bug Fixes
