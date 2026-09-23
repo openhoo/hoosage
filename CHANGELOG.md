@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 (2026-09-23)
+
+### Bug Fixes
+
+- **hoosage:** preserve partial usage and improve activity (#6) (0b901b3)
+
 ## 0.6.0 (2026-09-22)
 
 ### Features
