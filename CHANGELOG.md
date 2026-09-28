@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **hoosage:** opt-in shared-folder sync for linking usage across local and remote hosts
+
 ## 0.12.1 (2026-09-23)
 
 ### Bug Fixes

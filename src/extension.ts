@@ -1,7 +1,14 @@
 import * as vscode from "vscode";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { UsageTailer } from "./core/tailer";
 import {
   CliUsageScanner,
@@ -45,6 +52,7 @@ import {
 import type { Project, Snapshot, UsageCall } from "./core/types";
 import { registerWindow, routeWindow } from "./core/routing";
 import { hasTelemetryEnvironmentConflict } from "./core/environment";
+import { SharedUsageSync } from "./core/shared-usage-sync";
 
 const KEYS = [
   "enabled",
@@ -54,7 +62,9 @@ const KEYS = [
   "otlpEndpoint",
 ] as const;
 const BACKUP = "copilotSettingsBackup";
+const SHARED_SYNC = "sharedUsageSync";
 type Connection = { port: number; token: string };
+type SharedSyncConfig = { directory: string; groupId: string };
 const parseConnection = (value: unknown): Connection | undefined => {
   if (typeof value !== "object" || value === null) return undefined;
   const saved = value as Record<string, unknown>;
@@ -126,6 +136,27 @@ export async function activate(context: vscode.ExtensionContext) {
           pathHashes: folders.map((f) => folderPathHash(f.uri.fsPath)),
         }
       : undefined;
+  let sharedSync: SharedUsageSync | undefined;
+  const syncSettings = context.globalState.get<
+    Record<string, SharedSyncConfig>
+  >(SHARED_SYNC, {});
+  const syncConfig = current ? syncSettings[current.id] : undefined;
+  if (
+    current &&
+    syncConfig &&
+    typeof syncConfig.directory === "string" &&
+    isAbsolute(syncConfig.directory) &&
+    typeof syncConfig.groupId === "string" &&
+    syncConfig.groupId.trim().length > 0 &&
+    syncConfig.groupId.length <= 128
+  )
+    sharedSync = new SharedUsageSync(
+      syncConfig.directory,
+      syncConfig.groupId,
+      storeId,
+      vscode.env.sessionId,
+    );
+  let sharedUsageCount = 0;
   const capture = (id: string) => join(root, id, "copilot.jsonl");
   const tailers = new Map<string, UsageTailer>();
   const discovering = new Set<string>();
@@ -484,7 +515,8 @@ export async function activate(context: vscode.ExtensionContext) {
               .filter((c) => !c.source || c.source === "chat")
               .map((c) => c.timestamp)
           : [],
-      )) calls.push(call);
+      ))
+        calls.push(call);
     }
     projects.push(
       ...projectIndex
@@ -505,9 +537,28 @@ export async function activate(context: vscode.ExtensionContext) {
           name: bucketName,
           kind,
           folderCount: 0,
-          createdAt: bucketCalls.reduce((first, call) => Math.min(first, call.timestamp), Infinity),
+          createdAt: bucketCalls.reduce(
+            (first, call) => Math.min(first, call.timestamp),
+            Infinity,
+          ),
         });
     }
+    if (current && sharedSync)
+      try {
+        const sharedCalls = await sharedSync.poll(
+          calls.filter((call) => call.projectId === current.id),
+          current.id,
+        );
+        sharedUsageCount = sharedCalls.length;
+        calls.push(...sharedCalls);
+      } catch (error) {
+        sharedUsageCount = 0;
+        errors.push(
+          error instanceof Error
+            ? `Shared project sync: ${error.message}`
+            : "Shared project sync failed. Check the configured folder and refresh.",
+        );
+      }
     const problem = blocker() ?? collectorError;
     const connected =
       current &&
@@ -543,8 +594,7 @@ export async function activate(context: vscode.ExtensionContext) {
               ? `Collector ready on the ${remoteLabel} host. Run Copilot Chat, then Diagnose Tracking to confirm a Chat span arrives here.`
               : "This project is registered automatically. Use Copilot Chat to record usage; reload if you just enabled tracking.");
     const indexing =
-      [...tailers.values()].some((t) => !t.caughtUp) ||
-      !cliScanner.caughtUp;
+      [...tailers.values()].some((t) => !t.caughtUp) || !cliScanner.caughtUp;
     return {
       projects,
       calls,
@@ -651,6 +701,8 @@ export async function activate(context: vscode.ExtensionContext) {
       `Current project ID: ${current?.id ?? "none"}`,
       `Current project name: ${current?.name ?? "none"}`,
       `Current project registered here: ${registered ? "yes" : "no"}`,
+      `Shared project sync: ${sharedSync ? "enabled" : "disabled"}`,
+      `Usage entries received from other hosts: ${sharedUsageCount}`,
       `Project record created here: ${registered && Number.isFinite(registered.createdAt) ? new Date(registered.createdAt).toISOString() : "unknown"}`,
       `Saved Chat entries for this project on this host: ${chatCalls.length}`,
       `Imported earlier Chat requests for this project: ${current ? (chatHistory.get(current.id)?.length ?? 0) : 0}`,
@@ -834,6 +886,99 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   }
 
+  async function configureSharedSync() {
+    if (!current) {
+      await vscode.window.showWarningMessage(
+        "Open a trusted project before configuring shared usage sync.",
+      );
+      return;
+    }
+    const sharedPath = await vscode.window.showInputBox({
+      title: "Configure shared project sync",
+      prompt:
+        "Enter the absolute path to a shared folder visible to this host, outside every repository. Use this host's path format.",
+      placeHolder:
+        process.platform === "win32"
+          ? "C:\\Users\\you\\hoosage-share"
+          : "/mnt/c/Users/you/hoosage-share",
+      value: syncSettings[current.id]?.directory,
+      ignoreFocusOut: true,
+      validateInput: (value) =>
+        isAbsolute(value.trim())
+          ? undefined
+          : "Enter an absolute path visible to this extension host.",
+    });
+    if (sharedPath === undefined) return;
+    let directory: string;
+    let workspaceRoots: string[];
+    try {
+      directory = await realpath(resolve(sharedPath.trim()));
+      if (!(await stat(directory)).isDirectory())
+        throw new Error("The shared path is not a folder.");
+      workspaceRoots = await Promise.all(
+        (vscode.workspace.workspaceFolders ?? []).map((folder) =>
+          realpath(folder.uri.fsPath),
+        ),
+      );
+    } catch {
+      await vscode.window.showErrorMessage(
+        "hoosage could not verify the selected shared folder. Check access and try again.",
+      );
+      return;
+    }
+    const insideWorkspace = (folder: string) => {
+      const path = relative(resolve(folder), directory);
+      return (
+        path === "" ||
+        (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path))
+      );
+    };
+    if (workspaceRoots.some(insideWorkspace)) {
+      await vscode.window.showErrorMessage(
+        "Choose a shared folder outside this repository and all open workspace folders.",
+      );
+      return;
+    }
+    const groupId = await vscode.window.showInputBox({
+      title: "Configure shared project sync",
+      prompt:
+        "Enter the same private group ID on each host for this checkout. It is hashed before being used as a folder name.",
+      placeHolder: "for example: vrkb",
+      value: syncSettings[current.id]?.groupId,
+      ignoreFocusOut: true,
+      validateInput: (value) =>
+        value.trim().length > 0 && value.trim().length <= 128
+          ? undefined
+          : "Enter a group ID from 1 to 128 characters.",
+    });
+    if (groupId === undefined) return;
+    syncSettings[current.id] = { directory, groupId: groupId.trim() };
+    await context.globalState.update(SHARED_SYNC, syncSettings);
+    sharedSync = new SharedUsageSync(
+      directory,
+      groupId,
+      storeId,
+      vscode.env.sessionId,
+    );
+    sharedUsageCount = 0;
+    await vscode.window.showInformationMessage(
+      "Shared project sync is enabled for this workspace. Configure the same folder and group ID on the other host.",
+    );
+    await refresh();
+  }
+
+  async function disableSharedSync() {
+    if (!current || !syncSettings[current.id]) return;
+    delete syncSettings[current.id];
+    await context.globalState.update(SHARED_SYNC, syncSettings);
+    sharedSync = undefined;
+    sharedUsageCount = 0;
+    await vscode.window.showInformationMessage(
+      "Shared project sync is disabled for this workspace. Existing shared files are not deleted.",
+    );
+    await refresh();
+  }
+
   async function exportUsage(
     projectId = "all",
     days = 30,
@@ -946,7 +1091,8 @@ export async function activate(context: vscode.ExtensionContext) {
                       periodEnd(Date.now(), m.endDate) !== undefined)
                   : typeof m.startDate === "string" &&
                     typeof m.endDate === "string" &&
-                    customDateBounds(Date.now(), m.startDate, m.endDate) !== undefined) &&
+                    customDateBounds(Date.now(), m.startDate, m.endDate) !==
+                      undefined) &&
                 ["csv", "json"].includes(String(m.format))
               )
                 await exportUsage(
@@ -998,6 +1144,14 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("hoosage.refresh", refresh),
     vscode.commands.registerCommand("hoosage.diagnose", showDiagnostics),
     vscode.commands.registerCommand("hoosage.export", () => exportUsage()),
+    vscode.commands.registerCommand(
+      "hoosage.configureSharedSync",
+      configureSharedSync,
+    ),
+    vscode.commands.registerCommand(
+      "hoosage.disableSharedSync",
+      disableSharedSync,
+    ),
     vscode.window.registerWebviewViewProvider("hoosage.overview", {
       resolveWebviewView(view) {
         const dispose = attach(view.webview);
