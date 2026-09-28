@@ -1,12 +1,6 @@
 import { createHash } from "node:crypto";
-import {
-  appendFile,
-  mkdir,
-  open,
-  readdir,
-  readFile,
-  stat,
-} from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readdir, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { UsageCall } from "./types";
 
@@ -152,15 +146,26 @@ export class SharedUsageSync {
         pending.push({ version: 1, hostId: this.hostId, call });
         pendingKeys.push(key);
       }
-      if (pending.length)
-        await appendFile(
+      if (pending.length) {
+        const handle = await open(
           this.ownFile,
-          pending.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
-          {
-            encoding: "utf8",
-            mode: 0o600,
-          },
+          constants.O_WRONLY |
+            constants.O_APPEND |
+            constants.O_CREAT |
+            (constants.O_NOFOLLOW ?? 0),
+          0o600,
         );
+        try {
+          if (!(await handle.stat()).isFile())
+            throw new Error("A shared usage file is not a regular file.");
+          await handle.writeFile(
+            pending.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+            { encoding: "utf8" },
+          );
+        } finally {
+          await handle.close();
+        }
+      }
       for (const key of pendingKeys) this.written.add(key);
 
       const entries = await readdir(this.directory, { withFileTypes: true });
@@ -175,40 +180,47 @@ export class SharedUsageSync {
         if (sourceHostId === this.hostId) continue;
         activeFiles.add(file.name);
         const path = join(this.directory, file.name);
-        const fileStat = await stat(path);
-        if (fileStat.size > MAX_FILE_BYTES)
-          throw new Error("A shared usage file exceeds the 64 MiB limit.");
-        let peer = this.peerFiles.get(file.name);
-        if (!peer || fileStat.size < peer.offset) {
-          peer = { offset: 0, calls: new Map() };
-          this.peerFiles.set(file.name, peer);
-        }
-        const length = fileStat.size - peer.offset;
-        if (length) {
-          const handle = await open(path, "r");
-          let buffer: Buffer;
-          try {
-            buffer = Buffer.alloc(length);
+        const handle = await open(
+          path,
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+        );
+        try {
+          const fileStat = await handle.stat();
+          if (!fileStat.isFile())
+            throw new Error("A shared usage file is not a regular file.");
+          if (fileStat.size > MAX_FILE_BYTES)
+            throw new Error("A shared usage file exceeds the 64 MiB limit.");
+          let peer = this.peerFiles.get(file.name);
+          if (!peer || fileStat.size < peer.offset) {
+            peer = { offset: 0, calls: new Map() };
+            this.peerFiles.set(file.name, peer);
+          }
+          const length = fileStat.size - peer.offset;
+          if (length) {
+            const buffer = Buffer.alloc(length);
             const { bytesRead } = await handle.read(
               buffer,
               0,
               length,
               peer.offset,
             );
-            buffer = buffer.subarray(0, bytesRead);
-          } finally {
-            await handle.close();
+            const contentsBuffer = buffer.subarray(0, bytesRead);
+            const newline = contentsBuffer.lastIndexOf(10);
+            if (newline >= 0) {
+              const contents = contentsBuffer
+                .subarray(0, newline)
+                .toString("utf8");
+              for (const line of contents.split("\n")) {
+                if (!line) continue;
+                const entry = parseEntry(line, sourceHostId);
+                const key = `${entry.hostId}:${entry.call.projectId}:${entry.call.id}`;
+                peer.calls.set(key, entry.call);
+              }
+              peer.offset += newline + 1;
+            }
           }
-          const newline = buffer.lastIndexOf(10);
-          if (newline < 0) continue;
-          const contents = buffer.subarray(0, newline).toString("utf8");
-          for (const line of contents.split("\n")) {
-            if (!line) continue;
-            const entry = parseEntry(line, sourceHostId);
-            const key = `${entry.hostId}:${entry.call.projectId}:${entry.call.id}`;
-            peer.calls.set(key, entry.call);
-          }
-          peer.offset += newline + 1;
+        } finally {
+          await handle.close();
         }
       }
       for (const name of this.peerFiles.keys())
@@ -235,10 +247,18 @@ export class SharedUsageSync {
   }
 
   private async loadWritten() {
+    let handle: FileHandle | undefined;
     try {
-      if ((await stat(this.ownFile)).size > MAX_FILE_BYTES)
+      handle = await open(
+        this.ownFile,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      const fileStat = await handle.stat();
+      if (!fileStat.isFile())
+        throw new Error("A shared usage file is not a regular file.");
+      if (fileStat.size > MAX_FILE_BYTES)
         throw new Error("A shared usage file exceeds the 64 MiB limit.");
-      const contents = await readFile(this.ownFile, "utf8");
+      const contents = await handle.readFile({ encoding: "utf8" });
       for (const line of contents.split("\n")) {
         if (!line) continue;
         const entry = parseEntry(line, this.hostId);
@@ -247,6 +267,8 @@ export class SharedUsageSync {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
+    } finally {
+      await handle?.close();
     }
   }
 }
