@@ -81,6 +81,16 @@
         "command": "hoosage.export",
         "title": "Export Usage",
         "category": "hoosage"
+      },
+      {
+        "command": "hoosage.configureSharedSync",
+        "title": "Configure Shared Project Sync",
+        "category": "hoosage"
+      },
+      {
+        "command": "hoosage.disableSharedSync",
+        "title": "Disable Shared Project Sync",
+        "category": "hoosage"
       }
     ],
     "viewsContainers": {

@@ -115,7 +115,8 @@ const paths: Record<string, string> = {
     "M20 7v5h-5 M4 17v-5h5 M6 7a7 7 0 0 1 12-2l2 2 M4 17l2 2a7 7 0 0 0 12-2",
   bolt: "M13 2 4 14h7l-1 8 10-13h-7l1-7Z",
   chevron: "m9 5 7 7-7 7",
-  calendar: "M8 2v4 M16 2v4 M3 9h18 M5 4h14a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z",
+  calendar:
+    "M8 2v4 M16 2v4 M3 9h18 M5 4h14a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z",
   expand: "M15 3h6v6 M21 3l-7 7 M9 21H3v-6 M3 21l7-7",
 };
 const icon = (name: string) =>
@@ -237,7 +238,12 @@ function render() {
   const calls = selectedCalls();
   const nameCounts = new Map<string, number>();
   for (const project of data.projects) {
-    if (project.kind === "cli" || project.kind === "jetbrains" || project.kind === "chat") continue;
+    if (
+      project.kind === "cli" ||
+      project.kind === "jetbrains" ||
+      project.kind === "chat"
+    )
+      continue;
     const name = project.name.toLocaleLowerCase();
     nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
   }
@@ -334,7 +340,10 @@ function modelMix(calls: UsageCall[]) {
     )}</div>${models.length > 4 ? `<p class="muted">+ ${models.length - 4} more models · see Activity</p>` : ""}`;
 }
 
-function projectDescription(project: Snapshot["projects"][number], hasUsage: boolean) {
+function projectDescription(
+  project: Snapshot["projects"][number],
+  hasUsage: boolean,
+) {
   if (project.kind === "cli") return "Unmatched CLI sessions";
   if (project.kind === "jetbrains") return "Unmatched JetBrains sessions";
   if (project.kind === "chat") return "Chats opened without a folder";
@@ -359,34 +368,70 @@ function projects(calls: UsageCall[], embedded = false) {
     row.usage.length && all ? `${Math.round((row.tokens / all) * 100)}%` : "—";
   const callTitle = (row: (typeof rows)[number]) =>
     row.usage.length ? h(callCount(row)) : "No usage in selected period";
-  return `${!embedded ? `<section class="projects-intro" aria-label="Project overview"><span class="projects-intro-icon">${icon("projects")}</span><div class="projects-intro-copy"><span class="section-eyebrow">PROJECT INDEX</span><h2>Every project at a glance</h2><p>Usage stays with its own workspace or local session source. Open a project to inspect its overview.</p></div><div class="projects-intro-stats"><div><strong>${number(rows.length)}</strong><span>indexed</span></div><div><strong>${number(rows.filter((row) => row.usage.length).length)}</strong><span>with records</span></div></div></section>` : ""}<section class="card projects-card" aria-label="Project usage">${embedded ? `<div class="card-heading"><h2>Projects</h2><button class="text-button" data-page="projects">All projects ${icon("arrow")}</button></div>` : `<div class="card-heading projects-heading"><div><span class="section-eyebrow">SELECTED PERIOD</span><h2>Project breakdown</h2></div><span class="small-tag">Most tokens first</span></div>`}<div class="table-scroll"><table><thead><tr><th scope="col">Project</th><th scope="col">Model calls</th><th scope="col">Observed tokens</th><th scope="col">Cost (USD)</th><th scope="col" class="share-column">Token share</th><th scope="col"><span class="sr-only">View project</span></th></tr></thead><tbody>${rows.map((row, i) => `<tr><td><button class="project-link" data-project="${h(row.project.id)}">${projectName(row, i)}</button></td><td title="${callTitle(row)}">${row.usage.length ? measuredCalls(row) : "—"}</td><td class="token-cell" title="${row.usage.length ? row.missingUsage ? `${count(row.missingUsage, "entry")} with incomplete token data` : "Observed input and output tokens" : "No usage in selected period"}">${row.usage.length ? knownTokenLabel(row.usage, row.tokens, "total") : "—"}</td><td class="cost-cell" title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</td><td class="share-column"><div class="share-cell"><progress max="${all || 1}" value="${row.tokens}" aria-label="${h(row.project.name)} share of observed tokens"></progress><span>${share(row)}</span></div></td><td><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></td></tr>`).join("")}</tbody></table></div><div class="project-cards">${rows.map((row, i) => `<article class="project-card"><div class="project-card-head"><button class="project-link" data-project="${h(row.project.id)}">${projectName(row, i)}</button><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></div><dl class="project-card-metrics"><div><dt>Model calls</dt><dd title="${callTitle(row)}">${row.usage.length ? measuredCalls(row) : "—"}</dd></div><div><dt>Observed tokens</dt><dd>${row.usage.length ? knownTokenLabel(row.usage, row.tokens, "total") : "—"}</dd></div><div><dt>Cost (USD)</dt><dd title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</dd></div></dl><div class="project-card-share"><span>Token share</span><strong>${share(row)}</strong><progress max="${all || 1}" value="${row.tokens}" aria-label="${h(row.project.name)} share of observed tokens"></progress></div></article>`).join("")}</div>${!rows.length ? `<div class="mini-empty">${icon("projects")}<strong>No projects indexed yet</strong><span>Open a workspace or finish a local Copilot CLI or JetBrains session to see it here.</span></div>` : ""}</section>${!embedded && !demo ? '<div class="coverage-note"><span>Projects appear when opened with hoosage, found in this profile’s previously opened local folders, found in VS Code’s stored Chat history, or found in completed local CLI/JetBrains sessions. A new project card does not imply earlier Chat usage.</span></div>' : ""}`;
+  return `${!embedded ? `<section class="projects-intro" aria-label="Project overview"><span class="projects-intro-icon">${icon("projects")}</span><div class="projects-intro-copy"><span class="section-eyebrow">PROJECT INDEX</span><h2>Every project at a glance</h2><p>Usage stays with its own workspace or local session source. Open a project to inspect its overview. To aggregate a known Windows/WSL checkout, run <strong>hoosage: Configure Shared Project Sync</strong> on both hosts.</p></div><div class="projects-intro-stats"><div><strong>${number(rows.length)}</strong><span>indexed</span></div><div><strong>${number(rows.filter((row) => row.usage.length).length)}</strong><span>with records</span></div></div></section>` : ""}<section class="card projects-card" aria-label="Project usage">${embedded ? `<div class="card-heading"><h2>Projects</h2><button class="text-button" data-page="projects">All projects ${icon("arrow")}</button></div>` : `<div class="card-heading projects-heading"><div><span class="section-eyebrow">SELECTED PERIOD</span><h2>Project breakdown</h2></div><span class="small-tag">Most tokens first</span></div>`}<div class="table-scroll"><table><thead><tr><th scope="col">Project</th><th scope="col">Model calls</th><th scope="col">Observed tokens</th><th scope="col">Cost (USD)</th><th scope="col" class="share-column">Token share</th><th scope="col"><span class="sr-only">View project</span></th></tr></thead><tbody>${rows.map((row, i) => `<tr><td><button class="project-link" data-project="${h(row.project.id)}">${projectName(row, i)}</button></td><td title="${callTitle(row)}">${row.usage.length ? measuredCalls(row) : "—"}</td><td class="token-cell" title="${row.usage.length ? (row.missingUsage ? `${count(row.missingUsage, "entry")} with incomplete token data` : "Observed input and output tokens") : "No usage in selected period"}">${row.usage.length ? knownTokenLabel(row.usage, row.tokens, "total") : "—"}</td><td class="cost-cell" title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</td><td class="share-column"><div class="share-cell"><progress max="${all || 1}" value="${row.tokens}" aria-label="${h(row.project.name)} share of observed tokens"></progress><span>${share(row)}</span></div></td><td><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></td></tr>`).join("")}</tbody></table></div><div class="project-cards">${rows.map((row, i) => `<article class="project-card"><div class="project-card-head"><button class="project-link" data-project="${h(row.project.id)}">${projectName(row, i)}</button><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></div><dl class="project-card-metrics"><div><dt>Model calls</dt><dd title="${callTitle(row)}">${row.usage.length ? measuredCalls(row) : "—"}</dd></div><div><dt>Observed tokens</dt><dd>${row.usage.length ? knownTokenLabel(row.usage, row.tokens, "total") : "—"}</dd></div><div><dt>Cost (USD)</dt><dd title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</dd></div></dl><div class="project-card-share"><span>Token share</span><strong>${share(row)}</strong><progress max="${all || 1}" value="${row.tokens}" aria-label="${h(row.project.name)} share of observed tokens"></progress></div></article>`).join("")}</div>${!rows.length ? `<div class="mini-empty">${icon("projects")}<strong>No projects indexed yet</strong><span>Open a workspace or finish a local Copilot CLI or JetBrains session to see it here.</span></div>` : ""}</section>${!embedded && !demo ? '<div class="coverage-note"><span>Projects appear when opened with hoosage, found in this profile’s previously opened local folders, found in VS Code’s stored Chat history, or found in completed local CLI/JetBrains sessions. A new project card does not imply earlier Chat usage.</span></div>' : ""}`;
 }
 
 function activity(calls: UsageCall[]) {
   const sorted = groupSessions(calls);
   let previousDay = "";
-  const sessions = sorted.slice(0, visibleSessions).map(([key, list]) => {
-    const t = totals(list);
-    const first = list[0]!;
-    const project = data!.projects.find((entry) => entry.id === first.projectId);
-    const latest = list.reduce((time, call) => Math.max(time, call.timestamp), 0);
-    const sessionCost = costs(list);
-    const day = localDateKey(latest);
-    const dayHeading = day === previousDay ? "" : `<h3 class="activity-day"><span>${h(dateLabel(day))}</span>${day === localDateKey(data!.updatedAt) ? '<span class="activity-today">Today</span>' : ""}</h3>`;
-    previousDay = day;
-    const source = first.source === "cli" ? "CLI" : first.source === "jetbrains" ? "JetBrains" : first.source === "chat-history" ? "Imported" : "Chat";
-    const time = new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit" }).format(new Date(latest));
-    const detail = expandedSession === key
-      ? `<div class="session-detail">${byModel(list).map((model) => {
-          const modelCalls = list.filter((call) => call.model === model.model);
-          const input = modelCalls.every((call) => call.input === undefined) ? "—" : number(model.input);
-          const output = modelCalls.every((call) => call.output === undefined) ? "—" : number(model.output);
-          const modelCost = costs(modelCalls);
-          return `<div class="session-model"><span><strong>${h(model.model)}</strong><small>${h(callCount(model))} · ${input} in · ${output} out</small></span><strong title="${h(costDescription(modelCost))}">${h(costLabel(modelCost))}</strong></div>`;
-        }).join("")}<p>${[t.failed ? count(t.failed, "failed entry") : "", t.missingUsage ? `${count(t.missingUsage, "entry")} missing token data` : "", costDescription(sessionCost)].filter(Boolean).map(h).join(" · ")}</p></div>`
-      : "";
-    return `${dayHeading}<div class="session"><button class="session-toggle" data-focus="session-${h(key)}" data-session="${h(key)}" aria-expanded="${expandedSession === key}"><span class="session-icon">${icon("activity")}</span><span class="session-title"><strong>${h(project?.name ?? "Unknown project")}</strong><span class="session-meta"><time datetime="${new Date(latest).toISOString()}">${h(time)}</time><span class="session-source">${source}</span>${first.sessionId ? "" : '<span class="session-unlinked">Unlinked call</span>'}</span></span><span class="session-figures"><strong title="${h(costDescription(sessionCost))}">${h(costLabel(sessionCost))}</strong><small>${h(callCount(t))} · ${knownTokenLabel(list, t.tokens, "total")} tokens</small></span><span class="session-chevron">${icon("chevron")}</span></button>${detail}</div>`;
-  }).join("");
+  const sessions = sorted
+    .slice(0, visibleSessions)
+    .map(([key, list]) => {
+      const t = totals(list);
+      const first = list[0]!;
+      const project = data!.projects.find(
+        (entry) => entry.id === first.projectId,
+      );
+      const latest = list.reduce(
+        (time, call) => Math.max(time, call.timestamp),
+        0,
+      );
+      const sessionCost = costs(list);
+      const day = localDateKey(latest);
+      const dayHeading =
+        day === previousDay
+          ? ""
+          : `<h3 class="activity-day"><span>${h(dateLabel(day))}</span>${day === localDateKey(data!.updatedAt) ? '<span class="activity-today">Today</span>' : ""}</h3>`;
+      previousDay = day;
+      const source =
+        first.source === "cli"
+          ? "CLI"
+          : first.source === "jetbrains"
+            ? "JetBrains"
+            : first.source === "chat-history"
+              ? "Imported"
+              : "Chat";
+      const time = new Intl.DateTimeFormat("en", {
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date(latest));
+      const detail =
+        expandedSession === key
+          ? `<div class="session-detail">${byModel(list)
+              .map((model) => {
+                const modelCalls = list.filter(
+                  (call) => call.model === model.model,
+                );
+                const input = modelCalls.every(
+                  (call) => call.input === undefined,
+                )
+                  ? "—"
+                  : number(model.input);
+                const output = modelCalls.every(
+                  (call) => call.output === undefined,
+                )
+                  ? "—"
+                  : number(model.output);
+                const modelCost = costs(modelCalls);
+                return `<div class="session-model"><span><strong>${h(model.model)}</strong><small>${h(callCount(model))} · ${input} in · ${output} out</small></span><strong title="${h(costDescription(modelCost))}">${h(costLabel(modelCost))}</strong></div>`;
+              })
+              .join(
+                "",
+              )}<p>${[t.failed ? count(t.failed, "failed entry") : "", t.missingUsage ? `${count(t.missingUsage, "entry")} missing token data` : "", costDescription(sessionCost)].filter(Boolean).map(h).join(" · ")}</p></div>`
+          : "";
+      return `${dayHeading}<div class="session"><button class="session-toggle" data-focus="session-${h(key)}" data-session="${h(key)}" aria-expanded="${expandedSession === key}"><span class="session-icon">${icon("activity")}</span><span class="session-title"><strong>${h(project?.name ?? "Unknown project")}</strong><span class="session-meta"><time datetime="${new Date(latest).toISOString()}">${h(time)}</time><span class="session-source">${source}</span>${first.sessionId ? "" : '<span class="session-unlinked">Unlinked call</span>'}</span></span><span class="session-figures"><strong title="${h(costDescription(sessionCost))}">${h(costLabel(sessionCost))}</strong><small>${h(callCount(t))} · ${knownTokenLabel(list, t.tokens, "total")} tokens</small></span><span class="session-chevron">${icon("chevron")}</span></button>${detail}</div>`;
+    })
+    .join("");
   return `<section class="card activity-card"><div class="card-heading activity-heading"><div><span class="section-eyebrow">SESSION HISTORY</span><h2>Recent sessions</h2></div><span class="small-tag">${callCount(totals(calls))}</span></div>${calls.length ? `<div class="activity-list">${sessions}</div>` : `<div class="mini-empty">${icon("activity")}<strong>No activity in this period</strong><span>Choose another date range to explore your saved usage.</span><button type="button" class="button" data-calendar-action="open">Choose a date range ${icon("arrow")}</button></div>`}${sorted.length > visibleSessions ? `<div class="activity-more"><button class="button" data-action="moreSessions" data-focus="moreSessions">Show next ${Math.min(100, sorted.length - visibleSessions)} sessions</button><span>${Math.min(visibleSessions, sorted.length)} of ${sorted.length} shown</span></div>` : ""}</section>`;
 }
 
@@ -396,7 +441,7 @@ function about() {
     <section class="card about-card"><div class="about-card-top"><span class="about-card-icon">${icon("projects")}</span><span class="section-eyebrow">DISCOVERY</span></div><h2>VS Code projects</h2><p>Trusted workspaces register when opened with hoosage active. Setup is needed only once per profile; earlier registrations remain visible.</p><p>Saved records of previously opened local single-folder workspaces are scanned in the background. A discovered project may have no captured usage; discovery alone does not import past Chat calls. Stored VS Code Chat history can also add cards for workspaces, remote folders and deleted folders.</p><p>Clones and worktrees stay separate. An opened multi-root workspace counts as one workspace group.</p></section>
     <section class="card about-card"><div class="about-card-top"><span class="about-card-icon">${icon("bolt")}</span><span class="section-eyebrow">MEASUREMENT</span></div><h2>What counts</h2><p>Completed Copilot Chat calls are deduplicated. Missing values stay unknown; cache reads are already part of input tokens. Inline completions and usage on other hosts are excluded.</p><p>CLI session-state entries summarize model requests after a session ends. Imported Chat entries summarize one Chat request each: VS Code stores summed output tokens, model-call count and reported credits, but input tokens only when that request made a single model call.</p></section>
     <section class="card about-card"><div class="about-card-top"><span class="about-card-icon">${icon("activity")}</span><span class="section-eyebrow">HISTORY</span></div><h2>Saved usage</h2><p>Live Chat collection starts after setup and reload. Earlier completed requests still stored by VS Code are imported, marked “Imported” and not double-counted once live collection starts for a project. Chats VS Code already deleted cannot be recovered. Existing local CLI history is read separately.</p><p>Stopping tracking keeps your history. To delete it, stop tracking, reload, then delete hoosage’s project storage.</p></section>
-    <section class="card about-card"><div class="about-card-top"><span class="about-card-icon">${icon("arrow")}</span><span class="section-eyebrow">ATTRIBUTION</span></div><h2>Local sessions</h2><p>Completed CLI and JetBrains sessions discover projects from their recorded working directory, even if those projects were never opened in VS Code. Ambiguous locations stay unassigned.</p><p>Windows, WSL and container paths remain separate workspace identities, even when project names match.</p></section>
+    <section class="card about-card"><div class="about-card-top"><span class="about-card-icon">${icon("arrow")}</span><span class="section-eyebrow">ATTRIBUTION</span></div><h2>Local sessions</h2><p>Completed CLI and JetBrains sessions discover projects from their recorded working directory, even if those projects were never opened in VS Code. Ambiguous locations stay unassigned.</p><p>Windows, WSL and container paths remain separate by default. To aggregate one known checkout across hosts, explicitly configure <strong>hoosage: Configure Shared Project Sync</strong> on each host with the same shared folder and group ID.</p></section>
   </div>
   <section class="card pricing-details"><div class="about-section-heading"><span class="section-eyebrow">USAGE VALUE</span><h2>Costs in USD</h2></div><div class="pricing-key"><span><strong>Reported</strong> Copilot credits take priority; 1 credit = $0.01.</span><span><strong>≈ Estimated</strong> from the price table.</span><span><strong>+ Partial</strong> excludes unpriced usage.</span></div><p>Estimates use the <a href="${PRICING_SOURCE}">Copilot price table</a> from ${PRICING_DATE}, including cache rates and long-context tiers. These rates also apply to older calls. Missing cache details are assumed zero. Unknown models, incomplete token counts and CLI aggregates that could cross long-context tiers stay unpriced.</p><p>Usage value excludes subscription fees, allowances, discounts and taxes. It is not your bill.</p><p class="pricing-coverage">${h(costDescription(costs(selectedCalls())))}</p></section>
   <section class="card connection-card"><div><div class="about-section-heading"><span class="section-eyebrow">CONTROL</span><h2>Tracking</h2></div><p>${demo ? "Preview · Sample data" : h(data!.statusDetail)}</p>${data!.skippedLines ? `<p>${count(data!.skippedLines, "invalid record")} skipped.</p>` : ""}<p>Chat setup applies to all trusted VS Code projects in this profile. Local CLI and JetBrains projects are discovered without setup. Stop tracking before uninstalling to restore the previous Copilot settings.</p></div><div class="connection-actions">${demo ? action("Exit preview", "exitDemo") : data!.status === "reload" ? action("Reload window", "reload", true) : data!.canStopTracking || data!.status === "active" || data!.status === "waiting" ? action("Stop tracking", "disable") : action("Enable Chat tracking once", "enable", true)}<button class="button" data-action="diagnose">Diagnose tracking</button><button class="button" data-action="settings">Settings</button></div></section>`;
@@ -404,7 +449,9 @@ function about() {
 
 function focusCalendarDay() {
   root
-    .querySelector<HTMLElement>(`[data-focus="calendar-day-${calendarFocusDate}"]`)
+    .querySelector<HTMLElement>(
+      `[data-focus="calendar-day-${calendarFocusDate}"]`,
+    )
     ?.focus({ preventScroll: true });
 }
 
@@ -434,8 +481,7 @@ function shiftCalendarMonth(months: number, focusKey: string) {
   const next = new Date(year!, month! - 1 + months, 1);
   const today = localDateKey(data!.updatedAt);
   const key = localDateKey(next.getTime());
-  if (next.getFullYear() < 100 || key.slice(0, 7) > today.slice(0, 7))
-    return;
+  if (next.getFullYear() < 100 || key.slice(0, 7) > today.slice(0, 7)) return;
   calendarMonth = key;
   calendarFocusDate = key;
   render();
@@ -451,8 +497,10 @@ function moveCalendarFocus(key: string) {
   else if (key === "ArrowRight") date.setDate(date.getDate() + 1);
   else if (key === "ArrowUp") date.setDate(date.getDate() - 7);
   else if (key === "ArrowDown") date.setDate(date.getDate() + 7);
-  else if (key === "Home") date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
-  else if (key === "End") date.setDate(date.getDate() + (6 - ((date.getDay() + 6) % 7)));
+  else if (key === "Home")
+    date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+  else if (key === "End")
+    date.setDate(date.getDate() + (6 - ((date.getDay() + 6) % 7)));
   const today = localDateKey(data!.updatedAt);
   const target = localDateKey(date.getTime());
   if (target > today || date.getFullYear() < 100) return;
@@ -516,13 +564,17 @@ root.addEventListener("click", (event) => {
     return;
   }
   if (button.dataset.calendarNav) {
-    shiftCalendarMonth(Number(button.dataset.calendarNav), button.dataset.focus ?? "");
+    shiftCalendarMonth(
+      Number(button.dataset.calendarNav),
+      button.dataset.focus ?? "",
+    );
     return;
   }
   if (button.dataset.calendarBoundary) {
     activeBoundary = button.dataset.calendarBoundary as "start" | "end";
     if (activeBoundary === "start") draftMode = "custom";
-    calendarFocusDate = activeBoundary === "start" ? draftStartDate : draftEndDate;
+    calendarFocusDate =
+      activeBoundary === "start" ? draftStartDate : draftEndDate;
     calendarMonth = `${calendarFocusDate.slice(0, 7)}-01`;
     render();
     root
@@ -545,7 +597,9 @@ root.addEventListener("click", (event) => {
       if (draftMode === "custom") {
         if (draftEndDate < draftStartDate) draftStartDate = chosen;
       } else {
-        draftStartDate = localDateKey(startOfRange(days, periodEnd(data!.updatedAt, chosen)!));
+        draftStartDate = localDateKey(
+          startOfRange(days, periodEnd(data!.updatedAt, chosen)!),
+        );
       }
     }
     render();
@@ -690,7 +744,9 @@ root.addEventListener("keydown", (event) => {
     const [year, month, day] = calendarFocusDate.split("-").map(Number);
     const step = direction * (event.shiftKey ? 12 : 1);
     const last = new Date(year!, month! + step, 0).getDate();
-    const next = localDateKey(new Date(year!, month! - 1 + step, Math.min(day!, last)).getTime());
+    const next = localDateKey(
+      new Date(year!, month! - 1 + step, Math.min(day!, last)).getTime(),
+    );
     if (next <= localDateKey(data!.updatedAt)) {
       calendarFocusDate = next;
       calendarMonth = `${next.slice(0, 7)}-01`;
@@ -699,7 +755,11 @@ root.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+  if (
+    ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(
+      event.key,
+    )
+  ) {
     event.preventDefault();
     moveCalendarFocus(event.key);
   }
@@ -707,7 +767,9 @@ root.addEventListener("keydown", (event) => {
 document.addEventListener("click", (event) => {
   if (
     calendarOpen &&
-    !(event.target as Element).closest(".date-nav, [data-calendar-action='custom'], [data-calendar-action='open']")
+    !(event.target as Element).closest(
+      ".date-nav, [data-calendar-action='custom'], [data-calendar-action='open']",
+    )
   ) {
     calendarOpen = false;
     render();
@@ -721,7 +783,10 @@ root.addEventListener("focusout", (event) => {
   )
     return;
   queueMicrotask(() => {
-    if (calendarOpen && !root.querySelector(".date-nav")?.contains(document.activeElement)) {
+    if (
+      calendarOpen &&
+      !root.querySelector(".date-nav")?.contains(document.activeElement)
+    ) {
       calendarOpen = false;
       render();
     }
