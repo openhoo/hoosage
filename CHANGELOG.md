@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.0 (2026-09-28)
+
+### Features
+
+- **hoosage:** sync linked projects across hosts (#44) (3d57001)
+
 ## Unreleased
 
 ### Features
