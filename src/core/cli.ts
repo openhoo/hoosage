@@ -2,12 +2,21 @@ import { createHash } from "node:crypto";
 import { open, readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
-import { StringDecoder } from "node:string_decoder";
+import {
+  cacheFile,
+  readCache,
+  writeCache,
+  type ScanCache,
+} from "./scan-cache";
 import type { UsageCall } from "./types";
 
 const MAX_LINE = 2 * 1024 * 1024;
 const BATCH = 4 * 1024 * 1024;
 const MAX_SKEW = 24 * 60 * 60 * 1000;
+const EMPTY = Buffer.alloc(0);
+/** Bump when the cached reader state changes shape. */
+const CACHE_FORMAT = 1;
+const SAVE_INTERVAL_MS = 30_000;
 
 /** Attribution bucket for CLI sessions whose cwd matches no known project. */
 export const CLI_PROJECT_ID = "copilot-cli";
@@ -41,8 +50,8 @@ interface ModelSnapshot {
 interface FileState {
   offset: number;
   inode?: number;
-  decoder: StringDecoder;
-  pending: string;
+  /** Bytes after the last newline; always a partial line. */
+  pending: Buffer;
   dropping: boolean;
   cwd?: string;
   /** Event ordinal within this file; disambiguates events lacking an id. */
@@ -62,8 +71,7 @@ interface FileState {
 }
 const freshState = (): FileState => ({
   offset: 0,
-  decoder: new StringDecoder("utf8"),
-  pending: "",
+  pending: EMPTY,
   dropping: false,
   seq: 0,
   emitted: new Set(),
@@ -125,6 +133,100 @@ const modelName = (value: unknown): string | undefined =>
     ? value.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 160) || undefined
     : undefined;
 
+const text = (value: unknown): string | undefined =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value.length <= 4096 &&
+  !value.includes("\0")
+    ? value
+    : undefined;
+
+type CachedCall = Omit<
+  UsageCall,
+  "projectId" | "sessionId" | "source" | "failed"
+> & { cwd?: string };
+
+/** Validates one cached file entry; undefined means "read the file again". */
+function restoreFile(
+  sessionId: string,
+  value: unknown,
+): { st: FileState; calls: CachedCall[] } | undefined {
+  const saved = record(value);
+  if (
+    !saved ||
+    !/^[^\\/\0]{1,255}$/.test(sessionId) ||
+    sessionId === "." ||
+    sessionId === ".."
+  )
+    return undefined;
+  const offset = num(saved.offset);
+  const seq = num(saved.seq);
+  if (offset === undefined || seq === undefined) return undefined;
+  const workspace = record(saved.workspace);
+  const st: FileState = {
+    ...freshState(),
+    offset,
+    inode:
+      typeof saved.inode === "number" && Number.isFinite(saved.inode)
+        ? saved.inode
+        : undefined,
+    dropping: saved.dropping === true,
+    cwd: text(saved.cwd),
+    seq,
+    workspace: workspace
+      ? { clientName: text(workspace.clientName), cwd: text(workspace.cwd) }
+      : undefined,
+    model: modelName(saved.model),
+    totalRaw: num(saved.totalRaw),
+    totalOffset: num(saved.totalOffset) ?? 0,
+    accounted: num(saved.accounted) ?? 0,
+  };
+  for (const [model, raw] of Object.entries(record(saved.baselines) ?? {})) {
+    const baseline = record(raw);
+    if (!model || !baseline) return undefined;
+    st.baselines.set(model, {
+      input: num(baseline.input),
+      output: num(baseline.output),
+      cacheRead: num(baseline.cacheRead),
+      cacheWrite: num(baseline.cacheWrite),
+      requests: num(baseline.requests),
+      nanoAiu: num(baseline.nanoAiu),
+    });
+  }
+  if (!Array.isArray(saved.calls)) return undefined;
+  const calls: CachedCall[] = [];
+  for (const item of saved.calls) {
+    const call = record(item);
+    const id = call?.id;
+    const timestamp = num(call?.timestamp);
+    const model = modelName(call?.model);
+    // Entries missing here would never be emitted again from the saved offset.
+    if (
+      !call ||
+      typeof id !== "string" ||
+      id.length > 2048 ||
+      !id.startsWith(`cli:${sessionId}:`) ||
+      timestamp === undefined ||
+      !model
+    )
+      return undefined;
+    calls.push({
+      id,
+      timestamp,
+      model,
+      input: num(call.input),
+      output: num(call.output),
+      cacheRead: num(call.cacheRead),
+      cacheWrite: num(call.cacheWrite),
+      requests: num(call.requests),
+      nanoAiu: num(call.nanoAiu),
+      cwd: text(call.cwd),
+    });
+    st.emitted.add(id);
+  }
+  return { st, calls };
+}
+
 type Resolve = (cwd: string) => string | undefined;
 
 /** Incremental reader for Copilot CLI session-state event streams
@@ -138,7 +240,11 @@ type Resolve = (cwd: string) => string | undefined;
  * totalNanoAiu (usage checkpoints and shutdowns) is present it is
  * authoritative for cost: checkpoints emit cost-only increments (tokens and
  * requests are counted at shutdown) and each shutdown adds what is still
- * missing to the current model. */
+ * missing to the current model.
+ *
+ * With a cache, the reader state of each file (read position, cumulative
+ * baselines and emitted entries) is saved locally, so a new window only
+ * reads bytes appended since then. */
 export class CliUsageScanner {
   readonly calls = new Map<string, UsageCall>();
   skippedLines = 0;
@@ -149,20 +255,32 @@ export class CliUsageScanner {
   /** Local-only cwd for reattributing a session when new workspaces appear. */
   private readonly callCwds = new Map<string, string>();
   private busy = false;
+  private readonly cacheFile?: string;
+  private restored = false;
+  private dirty = false;
+  private savedAt = -Infinity;
 
-  constructor(root?: string) {
+  constructor(
+    root?: string,
+    private readonly cache?: ScanCache,
+  ) {
     this.root =
       root ??
       join(
         process.env.COPILOT_HOME || join(homedir(), ".copilot"),
         "session-state",
       );
+    if (cache) this.cacheFile = cacheFile(cache, "cli", this.root);
   }
 
   async poll(resolve: Resolve): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     try {
+      if (!this.restored) {
+        this.restored = true;
+        await this.restore();
+      }
       const rootInfo = await stat(this.root).catch((error) => {
         if ((error as NodeJS.ErrnoException).code === "ENOENT")
           return undefined;
@@ -176,6 +294,11 @@ export class CliUsageScanner {
       const entries = await readdir(this.root, { withFileTypes: true });
       let caughtUp = true;
       const sessions = entries.filter((entry) => entry.isDirectory());
+      // Usage of removed session folders disappears, as it would after a
+      // restart without cache.
+      const listed = new Set(sessions.map((entry) => entry.name));
+      for (const sessionId of [...this.files.keys()])
+        if (!listed.has(sessionId)) this.forget(sessionId);
       for (let start = 0; start < sessions.length; start += 16) {
         const batch = await Promise.allSettled(
           sessions
@@ -205,10 +328,112 @@ export class CliUsageScanner {
               : CLI_PROJECT_ID);
         }
       }
+      const wasCaughtUp = this.caughtUp;
       this.caughtUp = caughtUp;
+      if (
+        this.dirty &&
+        (Date.now() - this.savedAt >= SAVE_INTERVAL_MS ||
+          (caughtUp && !wasCaughtUp))
+      )
+        await this.persist();
     } finally {
       this.busy = false;
     }
+  }
+
+  private forget(sessionId: string): void {
+    const st = this.files.get(sessionId);
+    if (!st) return;
+    for (const id of st.emitted) {
+      this.calls.delete(id);
+      this.callCwds.delete(id);
+    }
+    this.files.delete(sessionId);
+    this.dirty = true;
+  }
+
+  /** Restores the reader state an earlier window saved for this folder. A
+   * file entry that fails validation is dropped and read again. */
+  private async restore(): Promise<void> {
+    if (!this.cacheFile || !this.cache) return;
+    const payload = await readCache(
+      this.cacheFile,
+      CACHE_FORMAT,
+      this.cache.key,
+      this.root,
+    );
+    const files = record(payload?.files);
+    if (!payload || !files) return;
+    this.skippedLines = num(payload.skippedLines) ?? 0;
+    for (const [sessionId, value] of Object.entries(files)) {
+      const restored = restoreFile(sessionId, value);
+      if (!restored) continue;
+      const { st, calls } = restored;
+      const source =
+        st.workspace?.clientName === JETBRAINS_CLIENT ? "jetbrains" : "cli";
+      for (const { cwd, ...call } of calls) {
+        // Project attribution is resolved again at the end of each poll.
+        this.calls.set(call.id, {
+          ...call,
+          projectId:
+            source === "jetbrains" ? JETBRAINS_PROJECT_ID : CLI_PROJECT_ID,
+          sessionId,
+          source,
+          failed: false,
+        });
+        if (cwd) this.callCwds.set(call.id, cwd);
+      }
+      this.files.set(sessionId, st);
+    }
+  }
+
+  private async persist(): Promise<void> {
+    if (!this.cacheFile || !this.cache) return;
+    const files: Record<string, unknown> = {};
+    for (const [sessionId, st] of this.files)
+      files[sessionId] = {
+        // Resume at the start of the unfinished line.
+        offset: st.offset - st.pending.length,
+        inode: st.inode,
+        dropping: st.dropping,
+        seq: st.seq,
+        cwd: st.cwd,
+        workspace: st.workspace ?? undefined,
+        model: st.model,
+        totalRaw: st.totalRaw,
+        totalOffset: st.totalOffset,
+        accounted: st.accounted,
+        baselines: Object.fromEntries(st.baselines),
+        calls: [...st.emitted].flatMap((id) => {
+          const call = this.calls.get(id);
+          return call
+            ? [
+                {
+                  id,
+                  timestamp: call.timestamp,
+                  model: call.model,
+                  input: call.input,
+                  output: call.output,
+                  cacheRead: call.cacheRead,
+                  cacheWrite: call.cacheWrite,
+                  requests: call.requests,
+                  nanoAiu: call.nanoAiu,
+                  cwd: this.callCwds.get(id),
+                },
+              ]
+            : [];
+        }),
+      };
+    this.dirty = false;
+    this.savedAt = Date.now();
+    const saved = await writeCache(
+      this.cacheFile,
+      CACHE_FORMAT,
+      this.cache.key,
+      this.root,
+      { skippedLines: this.skippedLines, files },
+    );
+    if (!saved) this.dirty = true;
   }
 
   /** Returns false while the file still has unread bytes. */
@@ -234,6 +459,7 @@ export class CliUsageScanner {
           this.callCwds.delete(id);
         }
         st = freshState();
+        this.dirty = true;
       }
       st.inode = info.ino;
       this.files.set(sessionId, st);
@@ -250,6 +476,7 @@ export class CliUsageScanner {
         });
         st.workspace = content === undefined ? null : parseWorkspace(content);
         if (st.workspace) {
+          this.dirty = true;
           if (st.cwd === undefined && st.workspace.cwd)
             st.cwd = st.workspace.cwd;
           // Re-tag calls emitted before the file appeared.
@@ -272,12 +499,8 @@ export class CliUsageScanner {
         const buffer = Buffer.alloc(length);
         const { bytesRead } = await file.read(buffer, 0, length, st.offset);
         st.offset += bytesRead;
-        this.consume(
-          sessionId,
-          st,
-          st.decoder.write(buffer.subarray(0, bytesRead)),
-          resolve,
-        );
+        if (bytesRead) this.dirty = true;
+        this.consume(sessionId, st, buffer.subarray(0, bytesRead), resolve);
       } catch {
         return false;
       }
@@ -287,14 +510,19 @@ export class CliUsageScanner {
     }
   }
 
+  /** Splits on newline bytes, so a resumable position is always the start of
+   * `pending` (UTF-8 never contains 0x0a inside a multi-byte character). */
   private consume(
     sessionId: string,
     st: FileState,
-    chunk: string,
+    chunk: Buffer,
     resolve: Resolve,
   ): void {
-    const lines = (st.pending + chunk).split("\n");
-    st.pending = lines.pop() ?? "";
+    const data = st.pending.length ? Buffer.concat([st.pending, chunk]) : chunk;
+    const end = data.lastIndexOf(0x0a);
+    // Copy, so the pending tail does not retain the whole read buffer.
+    st.pending = Buffer.from(data.subarray(end + 1));
+    const lines = end < 0 ? [] : data.toString("utf8", 0, end).split("\n");
     for (const line of lines) {
       if (st.dropping) {
         st.dropping = false;
@@ -312,7 +540,7 @@ export class CliUsageScanner {
       }
     }
     if (st.pending.length > MAX_LINE) {
-      st.pending = "";
+      st.pending = EMPTY;
       st.dropping = true;
       this.skippedLines++;
     }

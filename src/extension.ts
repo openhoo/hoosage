@@ -54,6 +54,7 @@ import { registerWindow, routeWindow } from "./core/routing";
 import { hasTelemetryEnvironmentConflict } from "./core/environment";
 import { SharedUsageSync } from "./core/shared-usage-sync";
 import { WslCliSessions } from "./core/wsl-sessions";
+import type { ScanCache } from "./core/scan-cache";
 
 const KEYS = [
   "enabled",
@@ -161,9 +162,17 @@ export async function activate(context: vscode.ExtensionContext) {
   const capture = (id: string) => join(root, id, "copilot.jsonl");
   const tailers = new Map<string, UsageTailer>();
   const discovering = new Set<string>();
-  const cliScanner = new CliUsageScanner();
+  // Local index caches let a new window resume where the last one stopped
+  // instead of re-reading every session file. Rebuilt after each update.
+  const scanCache: ScanCache = {
+    directory: join(storage, "cache"),
+    key: String(context.extension.packageJSON?.version ?? ""),
+  };
+  const cliScanner = new CliUsageScanner(undefined, scanCache);
   const wslSessions =
-    process.platform === "win32" ? new WslCliSessions() : undefined;
+    process.platform === "win32"
+      ? new WslCliSessions(undefined, undefined, scanCache)
+      : undefined;
   const readWsl = () =>
     wslSessions !== undefined &&
     vscode.workspace
@@ -312,13 +321,40 @@ export async function activate(context: vscode.ExtensionContext) {
   // what an open window would derive, so later live usage joins the same card.
   let chatHistory = new Map<string, UsageCall[]>();
   let chatHistoryComplete = Boolean(remoteName);
+  let chatHistoryLoaded = Boolean(remoteName);
   const importedHistoryFile = (id: string) =>
     join(root, id, "chat-history.json");
+  const isHistoryId = (id: string) =>
+    /^[a-f0-9]{24}$/.test(id) || id === NO_FOLDER_CHAT_PROJECT_ID;
+  const storedHistory = async (id: string): Promise<UsageCall[]> => {
+    try {
+      return restoreHistory(
+        JSON.parse(await readFile(importedHistoryFile(id), "utf8")),
+        id,
+      );
+    } catch {
+      return [];
+    }
+  };
   if (!remoteName)
     void (async () => {
+      // Entries imported by earlier windows are shown right away; the
+      // transcript scan below only adds what is new since then.
+      try {
+        const loaded = new Map<string, UsageCall[]>();
+        for (const id of (await readdir(root).catch(() => [])).filter(
+          isHistoryId,
+        )) {
+          const calls = await storedHistory(id);
+          if (calls.length) loaded.set(id, calls);
+        }
+        chatHistory = loaded;
+      } finally {
+        chatHistoryLoaded = true;
+      }
       const recovered = new Map<string, UsageCall[]>();
       try {
-        const scanned = await scanChatHistory(storage);
+        const scanned = await scanChatHistory(storage, scanCache);
         for (const project of scanned.projects) {
           if (project.id === current?.id) continue;
           discovering.add(project.id);
@@ -348,15 +384,8 @@ export async function activate(context: vscode.ExtensionContext) {
         ids = await readdir(root);
       } catch {}
       for (const id of new Set([...ids, ...recovered.keys()])) {
-        if (!/^[a-f0-9]{24}$/.test(id) && id !== NO_FOLDER_CHAT_PROJECT_ID)
-          continue;
-        let stored: UsageCall[] = [];
-        try {
-          stored = restoreHistory(
-            JSON.parse(await readFile(importedHistoryFile(id), "utf8")),
-            id,
-          );
-        } catch {}
+        if (!isHistoryId(id)) continue;
+        const stored = await storedHistory(id);
         const merged = mergeStoredHistory(stored, recovered.get(id) ?? []);
         if (merged.changed)
           try {
@@ -617,6 +646,7 @@ export async function activate(context: vscode.ExtensionContext) {
               ? `Collector ready on the ${remoteLabel} host. Run Copilot Chat, then Diagnose Tracking to confirm a Chat span arrives here.`
               : "This project is registered automatically. Use Copilot Chat to record usage; reload if you just enabled tracking.");
     const indexing =
+      !chatHistoryLoaded ||
       [...tailers.values()].some((t) => !t.caughtUp) ||
       !cliScanner.caughtUp ||
       (readWsl() && !wslSessions!.caughtUp);
