@@ -7,7 +7,6 @@ import {
   open,
   readdir,
   rm,
-  stat,
   truncate,
   utimes,
   writeFile,
@@ -76,10 +75,12 @@ async function fixture() {
 }
 
 /** Overwrites bytes in place: same file, same size, so only a reader that
- * resumes from its saved position keeps the original entries. */
+ * resumes from its saved position keeps the original entries. A negative
+ * length keeps that many bytes at the end. */
 async function scramble(file: string, length: number) {
   const handle = await open(file, "r+");
   try {
+    if (length < 0) length += (await handle.stat()).size;
     await handle.write(Buffer.alloc(length, 0x78), 0, length, 0);
   } finally {
     await handle.close();
@@ -98,8 +99,7 @@ test("a new CLI reader resumes from the cache instead of re-reading", async () =
     assert.equal(first.calls.size, 1);
     assert.equal((await readdir(f.cache.directory)).length, 1);
 
-    const size = (await stat(file)).size;
-    await scramble(file, size - 1);
+    await scramble(file, -1);
     await appendFile(file, shutdown("e2", 9, 3000, 700_000_000));
 
     const second = new CliUsageScanner(f.root, f.cache);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, readFile, type FileHandle } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { folderPathHash } from "./cli";
@@ -266,9 +266,12 @@ async function sessionCalls(
 ): Promise<RecoveredCall[]> {
   let session: ChatSession | undefined;
   let info: Stats;
+  let handle: FileHandle | undefined;
   const key = index ? relative(index.userDir, file) : "";
   try {
-    info = await stat(file);
+    // Checks and reads the same open file, so a replaced path cannot slip in.
+    handle = await open(file, "r");
+    info = await handle.stat();
     if (!info.isFile() || info.size > MAX_SESSION_BYTES) return [];
     const cached = index?.previous.get(key);
     if (
@@ -280,12 +283,14 @@ async function sessionCalls(
       index!.next.set(key, cached);
       return cached.calls;
     }
-    const raw = await readFile(file, "utf8");
+    const raw = await handle.readFile("utf8");
     session = file.endsWith(".jsonl")
       ? replayMutationLog(raw)
       : (JSON.parse(raw) as ChatSession);
   } catch {
     return [];
+  } finally {
+    await handle?.close().catch(() => {});
   }
   const calls = requestCalls(file, session, projectId);
   if (index) {
