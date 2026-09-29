@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.1 (2026-09-29)
+
+### Bug Fixes
+
+- **hoosage:** count full Copilot CLI session cost (#46) (73dd1b1)
+
 ## 0.13.0 (2026-09-28)
 
 ### Features
