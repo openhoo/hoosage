@@ -51,6 +51,14 @@ interface FileState {
   baselines: Map<string, ModelSnapshot>;
   /** workspace.yaml probe: undefined until read, null when absent/unreadable. */
   workspace?: { clientName?: string; cwd?: string } | null;
+  /** Latest model the session named; receives session-level cost. */
+  model?: string;
+  /** Last raw session-level cumulative nano-AIU counter value. */
+  totalRaw?: number;
+  /** Sum of earlier counter runs (older CLIs restart the counter on resume). */
+  totalOffset: number;
+  /** Session-level nano-AIU already emitted as entries. */
+  accounted: number;
 }
 const freshState = (): FileState => ({
   offset: 0,
@@ -60,6 +68,8 @@ const freshState = (): FileState => ({
   seq: 0,
   emitted: new Set(),
   baselines: new Map(),
+  totalOffset: 0,
+  accounted: 0,
 });
 
 /** Minimal field extraction from workspace.yaml — a flat CLI-written file.
@@ -110,14 +120,25 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
     ? (value as Record<string, unknown>)
     : undefined;
 
+const modelName = (value: unknown): string | undefined =>
+  typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 160) || undefined
+    : undefined;
+
 type Resolve = (cwd: string) => string | undefined;
 
 /** Incremental reader for Copilot CLI session-state event streams
  * (<root>/<session-id>/events.jsonl). Only type, id, timestamp,
- * data.context.cwd and data.modelMetrics are ever extracted — prompts and
- * tool arguments in these files are never retained. Shutdown metrics are
- * cumulative per (session, model), so each event emits the delta against
- * the stored baseline; inputTokens stays inclusive of cache tokens. */
+ * data.context.cwd, model names, data.modelMetrics and the session-level
+ * totalNanoAiu are ever extracted — prompts and tool arguments in these files
+ * are never retained. Shutdown metrics are cumulative per (session, model),
+ * so each event emits the delta against the stored baseline; inputTokens
+ * stays inclusive of cache tokens. The CLI resets modelMetrics on compaction
+ * and omits sub-agent calls, so when the session-level cumulative
+ * totalNanoAiu (usage checkpoints and shutdowns) is present it is
+ * authoritative for cost: checkpoints emit cost-only increments (tokens and
+ * requests are counted at shutdown) and each shutdown adds what is still
+ * missing to the current model. */
 export class CliUsageScanner {
   readonly calls = new Map<string, UsageCall>();
   skippedLines = 0;
@@ -316,22 +337,57 @@ export class CliUsageScanner {
       }
       return;
     }
-    if (event.type !== "session.shutdown") return;
-    const timestamp = Date.parse(event.timestamp as string);
-    if (!Number.isFinite(timestamp) || timestamp > Date.now() + MAX_SKEW) {
-      this.skippedLines++;
+    if (event.type === "session.model_change") {
+      const model = modelName(record(event.data)?.newModel);
+      if (model) st.model = model;
       return;
     }
-    const metrics = record(record(event.data)?.modelMetrics);
-    if (!metrics) return;
-    const eventId =
-      typeof event.id === "string" && event.id
-        ? event.id
-        : typeof event.id === "number" && Number.isFinite(event.id)
-          ? String(event.id)
-          : // Events without an id fall back to timestamp + file ordinal, so
-            // same-millisecond shutdowns cannot overwrite each other.
-            `t${timestamp}-${st.seq}`;
+    if (event.type === "session.usage_checkpoint") {
+      const data = record(event.data);
+      const reported = num(data?.totalNanoAiu);
+      if (reported === undefined) return;
+      const stamp = this.stamp(event, st);
+      if (!stamp) return;
+      const caches = data?.modelCacheState;
+      const model = modelName(
+        Array.isArray(caches) ? record(caches[0])?.modelId : undefined,
+      );
+      if (model) st.model = model;
+      const total = this.sessionTotal(st, reported);
+      const increment = total - st.accounted;
+      if (increment <= 0) return;
+      st.accounted = total;
+      // Cost only: tokens and requests of this interval arrive with the
+      // shutdown's modelMetrics, so zero keeps them from being counted twice.
+      this.emit(sessionId, st, resolve, {
+        id: `cli:${sessionId}:${stamp.eventId}:${st.model ?? "unknown"}`,
+        timestamp: stamp.timestamp,
+        model: st.model ?? "unknown",
+        input: 0,
+        output: 0,
+        requests: 0,
+        nanoAiu: increment,
+      });
+      return;
+    }
+    if (event.type !== "session.shutdown") return;
+    const stamp = this.stamp(event, st);
+    if (!stamp) return;
+    const { timestamp, eventId } = stamp;
+    const data = record(event.data);
+    const currentModel = modelName(data?.currentModel);
+    if (currentModel) st.model = currentModel;
+    // Session-level cost not yet emitted by earlier checkpoints/shutdowns.
+    // Undefined keeps the per-model cost behaviour of CLIs without the total.
+    let unassigned: number | undefined;
+    const reportedTotal = num(data?.totalNanoAiu);
+    if (reportedTotal !== undefined) {
+      const total = this.sessionTotal(st, reportedTotal);
+      unassigned = Math.max(0, total - st.accounted);
+      st.accounted = Math.max(st.accounted, total);
+    }
+    const emitted = new Map<string, UsageCall>();
+    const metrics = record(data?.modelMetrics) ?? {};
     for (const [model, raw] of Object.entries(metrics)) {
       if (!model) continue;
       const entry = record(raw);
@@ -379,26 +435,95 @@ export class CliUsageScanner {
         !delta.nanoAiu
       )
         continue;
-      const id = `cli:${sessionId}:${eventId}:${model}`;
-      this.calls.set(id, {
-        id,
-        projectId: this.projectIdFor(st, resolve),
+      let nanoAiu = delta.nanoAiu;
+      if (unassigned !== undefined) {
+        // The session total already covers this model's cost; never exceed
+        // it and never fall back to a token estimate on top of it.
+        nanoAiu = Math.min(nanoAiu ?? 0, unassigned);
+        unassigned -= nanoAiu;
+      }
+      emitted.set(
+        model,
+        this.emit(sessionId, st, resolve, {
+          id: `cli:${sessionId}:${eventId}:${model}`,
+          timestamp,
+          model,
+          input: delta.input,
+          output: delta.output,
+          cacheRead: delta.cacheRead,
+          cacheWrite: delta.cacheWrite,
+          requests: delta.requests,
+          nanoAiu,
+        }),
+      );
+    }
+    if (!unassigned) return;
+    const model = st.model ?? "unknown";
+    const call = emitted.get(model);
+    if (call) call.nanoAiu = (call.nanoAiu ?? 0) + unassigned;
+    else
+      this.emit(sessionId, st, resolve, {
+        id: `cli:${sessionId}:${eventId}:${model}`,
         timestamp,
         model,
-        sessionId,
-        source:
-          st.workspace?.clientName === JETBRAINS_CLIENT ? "jetbrains" : "cli",
-        input: delta.input,
-        output: delta.output,
-        cacheRead: delta.cacheRead,
-        cacheWrite: delta.cacheWrite,
-        requests: delta.requests,
-        nanoAiu: delta.nanoAiu,
-        failed: false,
+        input: 0,
+        output: 0,
+        requests: 0,
+        nanoAiu: unassigned,
       });
-      if (st.cwd) this.callCwds.set(id, st.cwd);
-      st.emitted.add(id);
+  }
+
+  /** Validated timestamp and a stable per-file event id. */
+  private stamp(
+    event: Record<string, unknown>,
+    st: FileState,
+  ): { timestamp: number; eventId: string } | undefined {
+    const timestamp = Date.parse(event.timestamp as string);
+    if (!Number.isFinite(timestamp) || timestamp > Date.now() + MAX_SKEW) {
+      this.skippedLines++;
+      return undefined;
     }
+    const eventId =
+      typeof event.id === "string" && event.id
+        ? event.id
+        : typeof event.id === "number" && Number.isFinite(event.id)
+          ? String(event.id)
+          : // Events without an id fall back to timestamp + file ordinal, so
+            // same-millisecond events cannot overwrite each other.
+            `t${timestamp}-${st.seq}`;
+    return { timestamp, eventId };
+  }
+
+  /** Advances the session-level cumulative counter and returns the session
+   * total. A drop means the CLI restarted its counters (older versions do on
+   * resume): earlier runs stay counted and per-model baselines restart. */
+  private sessionTotal(st: FileState, reported: number): number {
+    if (st.totalRaw !== undefined && reported < st.totalRaw) {
+      st.totalOffset += st.totalRaw;
+      st.baselines.clear();
+    }
+    st.totalRaw = reported;
+    return st.totalOffset + reported;
+  }
+
+  private emit(
+    sessionId: string,
+    st: FileState,
+    resolve: Resolve,
+    call: Omit<UsageCall, "projectId" | "sessionId" | "source" | "failed">,
+  ): UsageCall {
+    const full: UsageCall = {
+      ...call,
+      projectId: this.projectIdFor(st, resolve),
+      sessionId,
+      source:
+        st.workspace?.clientName === JETBRAINS_CLIENT ? "jetbrains" : "cli",
+      failed: false,
+    };
+    this.calls.set(full.id, full);
+    if (st.cwd) this.callCwds.set(full.id, st.cwd);
+    st.emitted.add(full.id);
+    return full;
   }
 
   /** Use the current project index; stored intervals are rechecked each poll. */
