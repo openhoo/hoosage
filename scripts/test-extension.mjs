@@ -5,20 +5,22 @@ import { resolve, join } from "node:path";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { createServer } from "node:net";
+import { testHost, vscodeFileUri } from "./extension-test-support.mjs";
 const root = resolve(".test-work");
 const profile = join(root, "profile");
 const workspace = join(root, "sample-project");
 const autoProject = join(root, "auto-project");
 const knownProject = join(root, "known-project");
 const copilotHome = join(root, "copilot-home");
-const uri = pathToFileURL(workspace).toString();
+const uri = vscodeFileUri(workspace);
 const id = createHash("sha256").update(uri).digest("hex").slice(0, 24);
 const autoId = createHash("sha256")
   .update(pathToFileURL(autoProject).toString())
   .digest("hex")
   .slice(0, 24);
+const knownUri = vscodeFileUri(knownProject);
 const knownId = createHash("sha256")
-  .update(pathToFileURL(knownProject).toString())
+  .update(knownUri)
   .digest("hex")
   .slice(0, 24);
 const store = join(profile, "User/globalStorage/openhoo.hoosage/projects", id);
@@ -37,7 +39,7 @@ const knownWindow = join(profile, "User/workspaceStorage/known-project");
 await mkdir(knownWindow, { recursive: true });
 await writeFile(
   join(knownWindow, "workspace.json"),
-  JSON.stringify({ folder: pathToFileURL(knownProject).toString() }),
+  JSON.stringify({ folder: knownUri }),
 );
 const historicalWindow = join(profile, "User/workspaceStorage/sample-history");
 await mkdir(join(historicalWindow, "chatSessions"), { recursive: true });
@@ -128,6 +130,7 @@ await writeFile(
     "github.copilot.chat.otel.otlpEndpoint": `http://127.0.0.1:${port}/${token}`,
     "github.copilot.chat.otel.outfile": "",
     "github.copilot.chat.otel.captureContent": false,
+    "hoosage.readWslCliSessions": false,
   }),
 );
 await writeFile(join(workspace, ".vscode/settings.json"), "{}");
@@ -141,12 +144,7 @@ await build({
   outfile: join(root, "extension-test.cjs"),
 });
 await runTests({
-  ...(process.env.VSCODE_EXECUTABLE
-    ? { vscodeExecutablePath: process.env.VSCODE_EXECUTABLE }
-    : { version: "insiders" }),
-  extensionDevelopmentPath: process.env.COPILOT_EXTENSION_PATH
-    ? [resolve("."), process.env.COPILOT_EXTENSION_PATH]
-    : resolve("."),
+  ...(await testHost()),
   extensionTestsPath: join(root, "extension-test.cjs"),
   launchArgs: [
     workspace,
