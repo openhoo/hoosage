@@ -3,6 +3,7 @@ dist/
 *.vsix
 .preview/
 .test-work/
+.vscode-test/
 .DS_Store
 .hooversion/
 jetbrains/.gradle/

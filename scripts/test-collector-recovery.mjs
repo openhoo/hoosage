@@ -3,8 +3,8 @@ import { build } from "esbuild";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { createHash } from "node:crypto";
-import { pathToFileURL } from "node:url";
 import { createServer } from "node:net";
+import { testHost, vscodeFileUri } from "./extension-test-support.mjs";
 
 const scenario = ["mismatch", "missing-history"].includes(process.argv[2])
   ? process.argv[2]
@@ -13,7 +13,7 @@ const root = resolve(`.test-work/collector-recovery-${scenario}`);
 const profile = join(root, "profile");
 const workspace = join(root, "project");
 const id = createHash("sha256")
-  .update(pathToFileURL(workspace).toString())
+  .update(vscodeFileUri(workspace))
   .digest("hex")
   .slice(0, 24);
 const token = "d".repeat(48);
@@ -41,6 +41,7 @@ await writeFile(
     "github.copilot.chat.otel.otlpEndpoint": endpoint,
     "github.copilot.chat.otel.outfile": "",
     "github.copilot.chat.otel.captureContent": false,
+    "hoosage.readWslCliSessions": false,
   }),
 );
 await writeFile(
@@ -99,12 +100,7 @@ await build({
   outfile: join(root, "extension-test.cjs"),
 });
 await runTests({
-  ...(process.env.VSCODE_EXECUTABLE
-    ? { vscodeExecutablePath: process.env.VSCODE_EXECUTABLE }
-    : { version: "insiders" }),
-  extensionDevelopmentPath: process.env.COPILOT_EXTENSION_PATH
-    ? [resolve("."), process.env.COPILOT_EXTENSION_PATH]
-    : resolve("."),
+  ...(await testHost()),
   extensionTestsPath: join(root, "extension-test.cjs"),
   launchArgs: [
     workspace,
@@ -120,6 +116,8 @@ await runTests({
     "--no-sandbox",
   ],
   extensionTestsEnv: {
+    // Keeps the scan away from this machine's real Copilot CLI sessions.
+    COPILOT_HOME: join(root, "copilot-home"),
     HOOSAGE_TEST_PROJECT_ID: id,
     HOOSAGE_TEST_ENDPOINT: endpoint,
     HOOSAGE_TEST_STORAGE: join(profile, "User/globalStorage/openhoo.hoosage"),

@@ -162,7 +162,7 @@ npm run package     # hoosage.vsix
 
 Press **F5** to launch an Extension Development Host. The production bundle contains no framework runtime or external assets. The only runtime dependency is the bundled protobuf decoder.
 
-`npm run test:extension` runs an isolated VS Code smoke test. It uses a separate profile and a synthetic OTLP producer; no account credentials or billable model calls are required. Set `VSCODE_EXECUTABLE` to use an existing VS Code binary. If Copilot is not automatically registered in the test profile, set `COPILOT_EXTENSION_PATH` to its installed extension directory. The test verifies activation, the actual enable command, user-setting readback, project identity, HTTP ingestion, deduplication, privacy and the real dashboard tab. It does not establish that a signed-in Copilot session has emitted usage.
+`npm run test:extension` runs an isolated VS Code smoke test. It uses a separate profile and a synthetic OTLP producer; no account credentials or billable model calls are required. Set `VSCODE_EXECUTABLE` to use an existing VS Code binary. VS Code does not load its built-in Copilot extension in an extension test host, so the test loads that bundled copy as a development extension; set `COPILOT_EXTENSION_PATH` to use a different Copilot extension directory. The test profile never reads this machine's Copilot CLI or WSL sessions. The test verifies activation, the actual enable command, user-setting readback, project identity, HTTP ingestion, deduplication, privacy and the real dashboard tab. It does not establish that a signed-in Copilot session has emitted usage.
 
 ## Technical references
 

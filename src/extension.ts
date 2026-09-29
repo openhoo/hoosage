@@ -1235,6 +1235,12 @@ export async function activate(context: vscode.ExtensionContext) {
     },
   });
   void refresh();
-  // Read-only API used by the real extension-host integration test.
-  return { getSnapshot: refresh, getDiagnostics: diagnosticLines };
+  // Read-only API used by the real extension-host integration test. A refresh
+  // already in flight may have started before the caller's last write, so
+  // callers always get one that starts after their request.
+  const currentSnapshot = async (): Promise<Snapshot> => {
+    if (refreshPromise) await refreshPromise;
+    return refresh();
+  };
+  return { getSnapshot: currentSnapshot, getDiagnostics: diagnosticLines };
 }
