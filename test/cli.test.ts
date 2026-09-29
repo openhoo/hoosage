@@ -585,3 +585,276 @@ test("workspace.yaml written after events re-tags emitted calls", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+const checkpoint = (
+  id: string,
+  timestamp: string,
+  totalNanoAiu: number,
+  modelId?: string,
+) =>
+  JSON.stringify({
+    type: "session.usage_checkpoint",
+    id,
+    timestamp,
+    data: {
+      totalNanoAiu,
+      totalPremiumRequests: 0,
+      modelCacheState: modelId ? [{ modelId, cacheTtlSeconds: 300 }] : [],
+    },
+  });
+
+const totalShutdown = (
+  id: string,
+  timestamp: string,
+  totalNanoAiu: number,
+  currentModel: string,
+  modelMetrics: Record<string, unknown>,
+) =>
+  JSON.stringify({
+    type: "session.shutdown",
+    id,
+    timestamp,
+    data: { totalNanoAiu, currentModel, modelMetrics },
+  });
+
+const priced = (
+  inputTokens: number,
+  outputTokens: number,
+  count: number,
+  totalNanoAiu: number,
+) => ({ ...metrics(inputTokens, outputTokens, 0, 0, count), totalNanoAiu });
+
+const sessionUsd = (scanner: CliUsageScanner) =>
+  [...scanner.calls.values()].reduce((n, c) => n + (callCost(c).usd ?? 0), 0);
+
+test("session totalNanoAiu covers usage lost to compaction via checkpoints", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "sess-compact");
+    // modelMetrics restart after compaction; only the session total keeps
+    // everything (observed: $13.83 total vs $6.23 in modelMetrics).
+    await writeFile(
+      file,
+      [
+        checkpoint(
+          "c1",
+          "2026-08-17T10:35:00Z",
+          491_000_000_000,
+          "claude-opus-4.8",
+        ),
+        checkpoint(
+          "c2",
+          "2026-08-17T10:56:00Z",
+          760_000_000_000,
+          "claude-opus-4.8",
+        ),
+        checkpoint(
+          "c3",
+          "2026-08-17T12:16:00Z",
+          1_383_000_000_000,
+          "claude-opus-4.8",
+        ),
+        totalShutdown(
+          "s1",
+          "2026-08-17T12:20:00Z",
+          1_383_000_000_000,
+          "claude-opus-4.8",
+          {
+            "claude-opus-4.8": priced(900_000, 9_000, 45, 623_000_000_000),
+          },
+        ),
+      ].join("\n") + "\n",
+    );
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "p");
+    assert.equal(sessionUsd(scanner).toFixed(2), "13.83");
+    const first = scanner.calls.get("cli:sess-compact:c1:claude-opus-4.8")!;
+    assert.equal(first.timestamp, Date.parse("2026-08-17T10:35:00Z"));
+    assert.equal(first.nanoAiu, 491_000_000_000);
+    assert.equal(first.requests, 0);
+    assert.equal(first.input, 0);
+    const final = scanner.calls.get("cli:sess-compact:s1:claude-opus-4.8")!;
+    assert.equal(final.input, 900_000);
+    assert.equal(final.requests, 45);
+    assert.equal(final.nanoAiu, 0);
+    const t = totals([...scanner.calls.values()]);
+    assert.equal(t.calls, 45);
+    assert.equal(t.missingRequests, 0);
+    assert.equal(t.missingUsage, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("shutdown assigns cost missing from modelMetrics to the current model", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "sess-sub");
+    await writeFile(
+      file,
+      totalShutdown(
+        "s1",
+        "2026-08-16T17:46:00Z",
+        300_000_000_000,
+        "gpt-5.6-sol",
+        {
+          "gpt-5.5": priced(1_000, 10, 1, 50_000_000_000),
+          "gpt-5.6-sol": priced(20_000, 200, 10, 150_000_000_000),
+        },
+      ) + "\n",
+    );
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "p");
+    assert.equal(scanner.calls.size, 2);
+    assert.equal(
+      scanner.calls.get("cli:sess-sub:s1:gpt-5.5")!.nanoAiu,
+      50_000_000_000,
+    );
+    assert.equal(
+      scanner.calls.get("cli:sess-sub:s1:gpt-5.6-sol")!.nanoAiu,
+      250_000_000_000,
+    );
+    assert.equal(sessionUsd(scanner).toFixed(2), "3.00");
+
+    const other = await sessionDir(dir, "sess-other");
+    await writeFile(
+      other,
+      totalShutdown(
+        "s1",
+        "2026-08-16T18:00:00Z",
+        80_000_000_000,
+        "claude-opus-4.8",
+        {
+          "gpt-5.5": priced(1_000, 10, 1, 30_000_000_000),
+        },
+      ) + "\n",
+    );
+    await scanner.poll(() => "p");
+    const rest = scanner.calls.get("cli:sess-other:s1:claude-opus-4.8")!;
+    assert.equal(rest.nanoAiu, 50_000_000_000);
+    assert.equal(rest.requests, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("running sessions report checkpoint cost before shutdown", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "sess-live");
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: "session.model_change",
+        timestamp: "2026-08-20T09:00:00Z",
+        data: { newModel: "gpt-5.6-sol" },
+      }) +
+        "\n" +
+        checkpoint("c1", "2026-08-20T09:10:00Z", 120_000_000_000) +
+        "\n",
+    );
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "p");
+    assert.equal(sessionUsd(scanner).toFixed(2), "1.20");
+    assert.equal(
+      scanner.calls.get("cli:sess-live:c1:gpt-5.6-sol")!.model,
+      "gpt-5.6-sol",
+    );
+    await appendFile(
+      file,
+      checkpoint("c2", "2026-08-20T09:20:00Z", 200_000_000_000, "gpt-5.6-sol") +
+        "\n" +
+        totalShutdown(
+          "s1",
+          "2026-08-20T09:30:00Z",
+          260_000_000_000,
+          "gpt-5.6-sol",
+          {
+            "gpt-5.6-sol": priced(50_000, 500, 12, 260_000_000_000),
+          },
+        ) +
+        "\n",
+    );
+    await scanner.poll(() => "p");
+    assert.equal(sessionUsd(scanner).toFixed(2), "2.60");
+    const final = scanner.calls.get("cli:sess-live:s1:gpt-5.6-sol")!;
+    assert.equal(final.nanoAiu, 60_000_000_000);
+    assert.equal(final.requests, 12);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cumulative session totals continue across resume", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "sess-resume");
+    await writeFile(
+      file,
+      [
+        totalShutdown(
+          "s1",
+          "2026-08-16T16:55:00Z",
+          216_000_000_000,
+          "gpt-5.6-sol",
+          {
+            "gpt-5.6-sol": priced(2_000, 20, 44, 216_000_000_000),
+          },
+        ),
+        JSON.stringify({ type: "session.resume", data: {} }),
+        checkpoint(
+          "c1",
+          "2026-08-16T17:40:00Z",
+          273_000_000_000,
+          "gpt-5.6-sol",
+        ),
+        totalShutdown(
+          "s2",
+          "2026-08-16T17:46:00Z",
+          273_000_000_000,
+          "gpt-5.6-sol",
+          {
+            "gpt-5.6-sol": priced(2_500, 25, 48, 273_000_000_000),
+          },
+        ),
+      ].join("\n") + "\n",
+    );
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "p");
+    assert.equal(sessionUsd(scanner).toFixed(2), "2.73");
+    assert.equal(totals([...scanner.calls.values()]).calls, 48);
+    assert.equal(
+      scanner.calls.get("cli:sess-resume:s2:gpt-5.6-sol")!.input,
+      500,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("per-run session counters from older CLIs are summed across resumes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "sess-runs");
+    await writeFile(
+      file,
+      [
+        totalShutdown("s1", "2026-07-03T08:27:00Z", 75_000_000_000, "gpt-5.5", {
+          "gpt-5.5": priced(10_000, 100, 18, 75_000_000_000),
+        }),
+        totalShutdown("s2", "2026-07-03T08:28:54Z", 26_000_000_000, "gpt-5.5", {
+          "gpt-5.5": priced(3_000, 30, 3, 26_000_000_000),
+        }),
+      ].join("\n") + "\n",
+    );
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "p");
+    assert.equal(sessionUsd(scanner).toFixed(2), "1.01");
+    const second = scanner.calls.get("cli:sess-runs:s2:gpt-5.5")!;
+    assert.equal(second.input, 3_000);
+    assert.equal(second.requests, 3);
+    assert.equal(second.nanoAiu, 26_000_000_000);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
