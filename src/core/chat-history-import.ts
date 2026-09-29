@@ -1,8 +1,15 @@
 import { createHash } from "node:crypto";
+import type { Stats } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { folderPathHash } from "./cli";
+import {
+  cacheFile,
+  readCache,
+  writeCache,
+  type ScanCache,
+} from "./scan-cache";
 import type { Project, UsageCall } from "./types";
 
 /** Attribution bucket for Chat sessions VS Code stored without a folder. */
@@ -231,14 +238,48 @@ export function requestUsage(
   };
 }
 
+type RecoveredCall = UsageCall & { dedupeKey: string };
+
+interface TranscriptEntry {
+  size: number;
+  mtimeMs: number;
+  projectId: string;
+  calls: RecoveredCall[];
+}
+
+/** Results of transcripts parsed earlier, keyed by path below the VS Code
+ * user folder; unchanged files (same size and modification time) are not
+ * parsed again. */
+interface TranscriptIndex {
+  userDir: string;
+  previous: Map<string, TranscriptEntry>;
+  next: Map<string, TranscriptEntry>;
+  changed: boolean;
+}
+
+const TRANSCRIPT_CACHE_FORMAT = 1;
+
 async function sessionCalls(
   file: string,
   projectId: string,
-): Promise<(UsageCall & { dedupeKey: string })[]> {
+  index?: TranscriptIndex,
+): Promise<RecoveredCall[]> {
   let session: ChatSession | undefined;
+  let info: Stats;
+  const key = index ? relative(index.userDir, file) : "";
   try {
-    const info = await stat(file);
+    info = await stat(file);
     if (!info.isFile() || info.size > MAX_SESSION_BYTES) return [];
+    const cached = index?.previous.get(key);
+    if (
+      cached &&
+      cached.size === info.size &&
+      cached.mtimeMs === info.mtimeMs &&
+      cached.projectId === projectId
+    ) {
+      index!.next.set(key, cached);
+      return cached.calls;
+    }
     const raw = await readFile(file, "utf8");
     session = file.endsWith(".jsonl")
       ? replayMutationLog(raw)
@@ -246,6 +287,24 @@ async function sessionCalls(
   } catch {
     return [];
   }
+  const calls = requestCalls(file, session, projectId);
+  if (index) {
+    index.next.set(key, {
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+      projectId,
+      calls,
+    });
+    index.changed = true;
+  }
+  return calls;
+}
+
+function requestCalls(
+  file: string,
+  session: ChatSession | undefined,
+  projectId: string,
+): RecoveredCall[] {
   if (!session || !Array.isArray(session.requests)) return [];
   const sessionId =
     typeof session.sessionId === "string" && session.sessionId
@@ -261,18 +320,66 @@ async function sessionCalls(
 async function directoryCalls(
   dir: string,
   projectId: string,
-): Promise<(UsageCall & { dedupeKey: string })[]> {
+  index?: TranscriptIndex,
+): Promise<RecoveredCall[]> {
   let files: string[];
   try {
     files = await readdir(dir);
   } catch {
     return [];
   }
-  const calls: (UsageCall & { dedupeKey: string })[] = [];
+  const calls: RecoveredCall[] = [];
   for (const file of files.filter((f) => /\.jsonl?$/.test(f)))
-    for (const call of await sessionCalls(join(dir, file), projectId))
+    for (const call of await sessionCalls(join(dir, file), projectId, index))
       calls.push(call);
   return calls;
+}
+
+async function loadTranscriptIndex(
+  cache: ScanCache,
+  userDir: string,
+): Promise<TranscriptIndex> {
+  const index: TranscriptIndex = {
+    userDir,
+    previous: new Map(),
+    next: new Map(),
+    changed: false,
+  };
+  const payload = await readCache(
+    cacheFile(cache, "chat", userDir),
+    TRANSCRIPT_CACHE_FORMAT,
+    cache.key,
+    userDir,
+  );
+  const files = payload?.files;
+  if (!files || typeof files !== "object" || Array.isArray(files)) return index;
+  for (const [key, value] of Object.entries(files)) {
+    const entry = value as Record<string, unknown> | null;
+    if (!entry || typeof entry !== "object" || !Array.isArray(entry.calls))
+      continue;
+    const size = count(entry.size);
+    const mtimeMs = entry.mtimeMs;
+    const projectId = label(entry.projectId);
+    if (
+      size === undefined ||
+      typeof mtimeMs !== "number" ||
+      !Number.isFinite(mtimeMs) ||
+      !projectId
+    )
+      continue;
+    const calls: RecoveredCall[] = [];
+    for (const item of entry.calls) {
+      const call = restoreCall(item, projectId);
+      const dedupeKey = (item as { dedupeKey?: unknown } | null)?.dedupeKey;
+      if (!call || typeof dedupeKey !== "string" || dedupeKey.length > 2048)
+        break;
+      calls.push({ ...call, dedupeKey });
+    }
+    // A partly invalid entry is parsed again from the transcript.
+    if (calls.length === entry.calls.length)
+      index.previous.set(key, { size, mtimeMs, projectId, calls });
+  }
+  return index;
 }
 
 const projectId = (identity: string) =>
@@ -334,29 +441,32 @@ export function restoreHistory(raw: unknown, projectId: string): UsageCall[] {
   const list = (raw as { calls?: unknown } | undefined)?.calls;
   if (!Array.isArray(list)) return [];
   return list.flatMap((item): UsageCall[] => {
-    if (!item || typeof item !== "object") return [];
-    const c = item as Record<string, unknown>;
-    const id = label(c.id);
-    const timestamp = count(c.timestamp);
-    if (!id || !/^[a-f0-9]{24}$/.test(id) || timestamp === undefined)
-      return [];
-    return [
-      {
-        id,
-        projectId,
-        timestamp,
-        model: label(c.model) ?? "unknown",
-        sessionId: label(c.sessionId),
-        source: "chat-history",
-        input: count(c.input),
-        output: count(c.output),
-        nanoAiu: count(c.nanoAiu),
-        requests: count(c.requests),
-        durationMs: count(c.durationMs),
-        failed: c.failed === true,
-      },
-    ];
+    const call = restoreCall(item, projectId);
+    return call ? [call] : [];
   });
+}
+
+function restoreCall(item: unknown, projectId: string): UsageCall | undefined {
+  if (!item || typeof item !== "object") return undefined;
+  const c = item as Record<string, unknown>;
+  const id = label(c.id);
+  const timestamp = count(c.timestamp);
+  if (!id || !/^[a-f0-9]{24}$/.test(id) || timestamp === undefined)
+    return undefined;
+  return {
+    id,
+    projectId,
+    timestamp,
+    model: label(c.model) ?? "unknown",
+    sessionId: label(c.sessionId),
+    source: "chat-history",
+    input: count(c.input),
+    output: count(c.output),
+    nanoAiu: count(c.nanoAiu),
+    requests: count(c.requests),
+    durationMs: count(c.durationMs),
+    failed: c.failed === true,
+  };
 }
 
 /** Adds newly recovered entries to the stored ones. Returns the merged list
@@ -398,13 +508,16 @@ export function withoutLiveOverlap(
 
 /** Scans every Chat transcript of this VS Code profile. The earliest copy of
  * a request wins when VS Code duplicated a session (for example after
- * continuing a chat in a new session), so copied requests count once. */
+ * continuing a chat in a new session), so copied requests count once. With a
+ * cache, only transcripts that changed since the last scan are parsed. */
 export async function scanChatHistory(
   globalStorageFsPath: string,
+  cache?: ScanCache,
 ): Promise<ChatHistory> {
   const userDir = dirname(dirname(globalStorageFsPath));
   const storageRoot = join(userDir, "workspaceStorage");
-  const found: (UsageCall & { dedupeKey: string })[] = [];
+  const index = cache ? await loadTranscriptIndex(cache, userDir) : undefined;
+  const found: RecoveredCall[] = [];
   const projects = new Map<string, Project>();
   let entries: string[] = [];
   try {
@@ -424,7 +537,11 @@ export async function scanChatHistory(
       continue;
     }
     if (!project) continue;
-    const calls = await directoryCalls(join(dir, "chatSessions"), project.id);
+    const calls = await directoryCalls(
+      join(dir, "chatSessions"),
+      project.id,
+      index,
+    );
     if (!calls.length) continue;
     let createdAt = Infinity;
     for (const call of calls) {
@@ -440,8 +557,21 @@ export async function scanChatHistory(
   const noFolder = await directoryCalls(
     join(userDir, "globalStorage", "emptyWindowChatSessions"),
     NO_FOLDER_CHAT_PROJECT_ID,
+    index,
   );
   for (const call of noFolder) found.push(call);
+  if (
+    cache &&
+    index &&
+    (index.changed || index.next.size !== index.previous.size)
+  )
+    await writeCache(
+      cacheFile(cache, "chat", userDir),
+      TRANSCRIPT_CACHE_FORMAT,
+      cache.key,
+      userDir,
+      { files: Object.fromEntries(index.next) },
+    );
   found.sort((a, b) => a.timestamp - b.timestamp);
   const seen = new Set<string>();
   const calls: UsageCall[] = [];

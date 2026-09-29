@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import { join, win32 } from "node:path";
 import { CliUsageScanner } from "./cli";
+import type { ScanCache } from "./scan-cache";
 import type { UsageCall } from "./types";
 
 // Reading \\wsl.localhost\<distro> starts a stopped distribution, so the
@@ -82,6 +83,7 @@ export class WslCliSessions {
   constructor(
     private readonly listDistros: () => Promise<string[]> = runningWslDistros,
     private readonly shareRoot = "\\\\wsl.localhost",
+    private readonly cache?: ScanCache,
   ) {}
 
   get calls(): UsageCall[] {
@@ -164,7 +166,7 @@ export class WslCliSessions {
       if (info?.isDirectory())
         this.scanners.set(root, {
           distro,
-          scanner: new CliUsageScanner(root),
+          scanner: new CliUsageScanner(root, this.cache),
         });
     }
   }
