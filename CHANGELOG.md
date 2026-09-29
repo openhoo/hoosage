@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.2 (2026-09-29)
+
+### Bug Fixes
+
+- **hoosage:** read Copilot CLI sessions from WSL on Windows (#48) (381f431)
+
 ## 0.13.1 (2026-09-29)
 
 ### Bug Fixes
