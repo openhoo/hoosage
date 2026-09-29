@@ -132,6 +132,12 @@
           "type": "boolean",
           "default": true,
           "description": "Show today's USD usage value and observed Copilot tokens for the current project in the status bar."
+        },
+        "hoosage.readWslCliSessions": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "On Windows, also read Copilot CLI and JetBrains session-state from running WSL distributions (never starts a stopped distribution)."
         }
       }
     }

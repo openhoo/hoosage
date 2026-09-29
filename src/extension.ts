@@ -53,6 +53,7 @@ import type { Project, Snapshot, UsageCall } from "./core/types";
 import { registerWindow, routeWindow } from "./core/routing";
 import { hasTelemetryEnvironmentConflict } from "./core/environment";
 import { SharedUsageSync } from "./core/shared-usage-sync";
+import { WslCliSessions } from "./core/wsl-sessions";
 
 const KEYS = [
   "enabled",
@@ -161,6 +162,13 @@ export async function activate(context: vscode.ExtensionContext) {
   const tailers = new Map<string, UsageTailer>();
   const discovering = new Set<string>();
   const cliScanner = new CliUsageScanner();
+  const wslSessions =
+    process.platform === "win32" ? new WslCliSessions() : undefined;
+  const readWsl = () =>
+    wslSessions !== undefined &&
+    vscode.workspace
+      .getConfiguration("hoosage")
+      .get<boolean>("readWslCliSessions", true);
   const views = new Set<vscode.Webview>();
   const diagnostics = vscode.window.createOutputChannel("hoosage tracking");
   context.subscriptions.push(diagnostics);
@@ -502,9 +510,21 @@ export async function activate(context: vscode.ExtensionContext) {
         "Could not read Copilot CLI session data. Check storage permissions and refresh.",
       );
     }
+    if (readWsl())
+      try {
+        await wslSessions!.poll((cwd) => projectIndex.resolve(cwd));
+      } catch {
+        errors.push(
+          "Could not read Copilot CLI session data from WSL. Check that the distribution is running and refresh.",
+        );
+      }
+    const sessionCalls = [
+      ...cliScanner.calls.values(),
+      ...(readWsl() ? wslSessions!.calls : []),
+    ];
     const calls = [
       ...[...tailers.values()].flatMap((t) => [...t.calls.values()]),
-      ...cliScanner.calls.values(),
+      ...sessionCalls,
     ];
     for (const [id, imported] of chatHistory) {
       const live = tailers.get(id);
@@ -520,7 +540,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     projects.push(
       ...projectIndex
-        .projects([...cliScanner.calls.values()])
+        .projects(sessionCalls)
         .filter(
           (project) => !projects.some((known) => known.id === project.id),
         ),
@@ -550,7 +570,10 @@ export async function activate(context: vscode.ExtensionContext) {
           current.id,
         );
         sharedUsageCount = sharedCalls.length;
-        calls.push(...sharedCalls);
+        // A peer host may share session usage this host already reads
+        // directly (e.g. WSL CLI sessions); entry ids identify the same usage.
+        const localIds = new Set(calls.map((call) => call.id));
+        calls.push(...sharedCalls.filter((call) => !localIds.has(call.id)));
       } catch (error) {
         sharedUsageCount = 0;
         errors.push(
@@ -594,7 +617,9 @@ export async function activate(context: vscode.ExtensionContext) {
               ? `Collector ready on the ${remoteLabel} host. Run Copilot Chat, then Diagnose Tracking to confirm a Chat span arrives here.`
               : "This project is registered automatically. Use Copilot Chat to record usage; reload if you just enabled tracking.");
     const indexing =
-      [...tailers.values()].some((t) => !t.caughtUp) || !cliScanner.caughtUp;
+      [...tailers.values()].some((t) => !t.caughtUp) ||
+      !cliScanner.caughtUp ||
+      (readWsl() && !wslSessions!.caughtUp);
     return {
       projects,
       calls,
@@ -605,7 +630,8 @@ export async function activate(context: vscode.ExtensionContext) {
       updatedAt: Date.now(),
       skippedLines:
         [...tailers.values()].reduce((n, t) => n + t.skippedLines, 0) +
-        cliScanner.skippedLines,
+        cliScanner.skippedLines +
+        (readWsl() ? wslSessions!.skippedLines : 0),
       errors,
       indexing,
     };
@@ -722,6 +748,11 @@ export async function activate(context: vscode.ExtensionContext) {
       `Indexing saved usage: ${state.indexing ? "yes" : "no"}`,
       `Chat history scan complete here: ${history?.caughtUp ? "yes" : "no"}`,
       `Local CLI session scan complete here: ${cliScanner.caughtUp ? "yes" : "no"}`,
+      ...(wslSessions
+        ? [
+            `WSL CLI session folders read here: ${readWsl() ? wslSessions.folderCount : "disabled"}`,
+          ]
+        : []),
       ...(remoteUiFallback
         ? [
             `Next step: install Hoosage inside the ${remoteLabel} workspace, then reload.`,
