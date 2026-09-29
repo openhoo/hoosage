@@ -236,18 +236,6 @@ function render() {
   if (projectId !== "all" && !data.projects.some((p) => p.id === projectId))
     projectId = "all";
   const calls = selectedCalls();
-  const nameCounts = new Map<string, number>();
-  for (const project of data.projects) {
-    if (
-      project.kind === "cli" ||
-      project.kind === "jetbrains" ||
-      project.kind === "chat"
-    )
-      continue;
-    const name = project.name.toLocaleLowerCase();
-    nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
-  }
-  const duplicateNames = [...nameCounts.values()].some((count) => count > 1);
   root.removeAttribute("aria-busy");
   root.innerHTML = `
     <aside class="rail"><a class="brand" href="#overview" data-page="overview" aria-label="hoosage overview">${mark}<span>hoosage<span class="brand-dot">.</span></span></a>
@@ -267,7 +255,6 @@ function render() {
     <div class="page-heading"><div><h1>${{ overview: "Copilot usage", projects: "Projects", activity: "Activity", about: "Usage details" }[page]}</h1></div><div class="heading-actions"><button class="icon-button expand-button" data-action="open" title="Open full dashboard" aria-label="Open full dashboard">${icon("expand")}</button><button class="icon-button" data-action="refresh" data-focus="refresh" title="Refresh usage" aria-label="Refresh usage">${icon("refresh")}</button></div></div>
     ${page !== "about" ? `<div class="toolbar">${page === "projects" ? '<span class="toolbar-title">All projects</span>' : `<label class="project-picker">${icon("projects")}<span class="sr-only">Project</span><select id="project" data-focus="project" aria-label="Project"><option value="all">All projects</option>${data.projects.map((p) => `<option value="${h(p.id)}" ${projectId === p.id ? "selected" : ""}>${h(p.name)}</option>`).join("")}</select></label>`}<div class="toolbar-right">${dateControls(today)}<button class="button export" data-action="export" data-focus="export">${icon("download")}Export</button></div></div>` : ""}
     ${data.errors.map((error) => `<div class="notice" role="status">${icon("about")}${h(error)}</div>`).join("")}
-    ${!demo && duplicateNames && page !== "about" ? `<div class="notice" role="status">${icon("about")}Projects with the same name may be separate Windows, WSL, container, clone or worktree locations. Their usage stays separate by workspace identity; Hoosage never merges them by name.</div>` : ""}
     ${!demo && data.indexing && page !== "about" ? `<section class="onboarding" aria-busy="true">${icon("activity")}<span class="section-eyebrow">LOCAL USAGE</span><h2>Indexing saved usage…</h2><p>Reading hoosage's saved project records and local sessions. Totals will appear when the scan is complete.</p></section>` : page === "about" ? about() : page === "projects" ? projects(calls) : page === "activity" ? activity(calls) : overview(calls)}
 
     </main></div><div class="toast" role="status" aria-live="polite">${h(toast)}</div>`;
