@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.3 (2026-09-29)
+
+### Bug Fixes
+
+- **hoosage:** remove duplicate project name notice (#50) (16842e2)
+
 ## 0.13.2 (2026-09-29)
 
 ### Bug Fixes
