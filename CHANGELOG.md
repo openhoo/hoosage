@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0 (2026-09-29)
+
+### Features
+
+- **hoosage:** cache session indexes across windows (#52) (bf67251)
+
 ## 0.13.3 (2026-09-29)
 
 ### Bug Fixes
