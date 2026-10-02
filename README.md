@@ -11,6 +11,30 @@ _Dark overview. All screenshots show the current dashboard with labelled sample 
 
 Know where your Copilot usage goes, without leaving your editor. hoosage brings project comparisons, token trends, model breakdowns and session activity into a calm, responsive dashboard and a compact sidebar.
 
+## Agent skills
+
+Two installable skills serve different tasks:
+
+- [`hoosage-usage`](skills/hoosage-usage/SKILL.md) helps agents set up, diagnose, and interpret local Copilot usage tracking.
+- [`hoosage-development`](skills/hoosage-development/SKILL.md) helps agents
+  change and verify hoosage itself. Repository agents find it through
+  `AGENTS.md` and `.agents/skills`.
+
+Install the user skill from your consuming project's directory:
+
+```bash
+npx skills add openhoo/hoosage --skill hoosage-usage
+```
+
+For contributor work, select `--skill hoosage-development`. Add `--global`
+for use across projects; otherwise installation is project-scoped. The installer
+lets you select your supported coding agent. Skills supply instructions and
+bundled references; install the product separately using the guidance below.
+
+For unpublished changes, pass the local checkout path instead of
+`openhoo/hoosage`, for example
+`npx skills add ./hoosage --skill hoosage-usage` from its parent directory.
+
 ## Install
 
 **JetBrains IDEs:** Download `hoosage-jetbrains-*.zip` from the [GitHub Releases](https://github.com/openhoo/hoosage/releases) page and install it via **Settings → Plugins → Install Plugin from Disk**. The standalone [JetBrains plugin](jetbrains/README.md) provides a hoosage tool window for completed Copilot sessions in the current IDE project.
