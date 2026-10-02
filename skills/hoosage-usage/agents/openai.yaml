@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hoosage User Guide"
+  short_description: "Track and diagnose local Copilot usage"
+  default_prompt: "Use $hoosage-usage to set up and verify this workflow in my project."

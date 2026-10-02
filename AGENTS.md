@@ -8,3 +8,13 @@
 - Never persist or export prompts, response bodies, tool arguments, code or repository URLs.
 - Keep the webview CSP strict and assets local. Maintain labelled demo and empty/error states.
 - The public repository lives at github.com/openhoo/hoosage.
+
+## Agent skills
+
+- For work on the extension or JetBrains plugin, read
+  [hoosage-development](skills/hoosage-development/SKILL.md).
+- For installing, configuring, or diagnosing usage tracking, read
+  [hoosage-usage](skills/hoosage-usage/SKILL.md).
+
+Installable sources live in `skills/`; `.agents/skills` exposes the development
+skill through a relative link. Keep skill guidance aligned with source and CI.

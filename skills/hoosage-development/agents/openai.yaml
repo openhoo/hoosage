@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hoosage Development"
+  short_description: "Develop and verify Hoosage source changes"
+  default_prompt: "Use $hoosage-development to implement and verify this change in the source repository."

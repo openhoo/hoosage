@@ -1,5 +1,7 @@
 .vscode/**
 .github/**
+.agents/**
+skills/**
 jetbrains/**
 .hoolicy/**
 .test-work/**
