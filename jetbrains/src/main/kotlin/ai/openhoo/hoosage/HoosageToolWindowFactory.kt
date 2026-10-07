@@ -85,7 +85,6 @@ private class UsageView(private val project: Project) : Disposable {
             add(JLabel().apply {
                 putClientProperty("html.disable", true)
                 text = "Copilot usage · ${project.name}"
-                toolTipText = project.name
             }, BorderLayout.CENTER)
             add(JPanel(GridLayout(2, 2, 8, 8)).apply {
                 add(days); add(refresh); add(export); add(preview)
