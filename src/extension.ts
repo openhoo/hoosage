@@ -17,6 +17,8 @@ import {
   folderPathHash,
 } from "./core/cli";
 import { ProjectIndex } from "./core/project-index";
+import { restoreProject } from "./core/project-metadata";
+import { exactFolderPathHash } from "./core/path-identity";
 import {
   discoverKnownFolders,
   placeholderProject,
@@ -27,6 +29,7 @@ import {
   restoreHistory,
   scanChatHistory,
   withoutLiveOverlap,
+  storedHistoryPayload,
 } from "./core/chat-history-import";
 import {
   isOwnCollectorHealth,
@@ -65,6 +68,11 @@ const KEYS = [
 ] as const;
 const BACKUP = "copilotSettingsBackup";
 const SHARED_SYNC = "sharedUsageSync";
+let stopHost: (() => Promise<void>) | undefined;
+
+export async function deactivate() {
+  await stopHost?.();
+}
 type Connection = { port: number; token: string };
 type SharedSyncConfig = { directory: string; groupId: string };
 const parseConnection = (value: unknown): Connection | undefined => {
@@ -104,6 +112,7 @@ const esc = (s: string) =>
 
 export async function activate(context: vscode.ExtensionContext) {
   if (!vscode.workspace.isTrusted) return;
+  let disposed = false;
   const storage = context.globalStorageUri.fsPath;
   const storeId = createHash("sha256")
     .update(storage)
@@ -136,6 +145,9 @@ export async function activate(context: vscode.ExtensionContext) {
           folderCount: folders.length,
           createdAt: Date.now(),
           pathHashes: folders.map((f) => folderPathHash(f.uri.fsPath)),
+          exactPathHashes: folders.map((f) =>
+            exactFolderPathHash(f.uri.fsPath),
+          ),
         }
       : undefined;
   let sharedSync: SharedUsageSync | undefined;
@@ -279,11 +291,26 @@ export async function activate(context: vscode.ExtensionContext) {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        const stored: Project = JSON.parse(await readFile(metadata, "utf8"));
-        if (!stored.pathHashes?.length && project.pathHashes?.length)
+        const stored = restoreProject(
+          JSON.parse(await readFile(metadata, "utf8")),
+        );
+        if (
+          stored &&
+          ((!stored.pathHashes?.length && project.pathHashes?.length) ||
+            (!stored.exactPathHashes?.length &&
+              project.exactPathHashes?.length))
+        )
           await writeFile(
             metadata,
-            JSON.stringify({ ...stored, pathHashes: project.pathHashes }),
+            JSON.stringify({
+              ...stored,
+              pathHashes: stored.pathHashes?.length
+                ? stored.pathHashes
+                : project.pathHashes,
+              exactPathHashes: stored.exactPathHashes?.length
+                ? stored.exactPathHashes
+                : project.exactPathHashes,
+            }),
             { mode: 0o600 },
           );
       } catch {
@@ -392,7 +419,7 @@ export async function activate(context: vscode.ExtensionContext) {
             await mkdir(join(root, id), { recursive: true, mode: 0o700 });
             await writeFile(
               importedHistoryFile(id),
-              JSON.stringify({ version: 1, calls: merged.calls }),
+              JSON.stringify(storedHistoryPayload(merged.calls)),
               { mode: 0o600 },
             );
           } catch {
@@ -418,6 +445,7 @@ export async function activate(context: vscode.ExtensionContext) {
     config().get("enabled") === true;
 
   async function ensureCollector(force = false) {
+    if (disposed) return;
     if (!connection) {
       try {
         connection = parseConnection(
@@ -427,6 +455,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     if (
       !current ||
+      disposed ||
       !connection ||
       collector ||
       (!force &&
@@ -436,13 +465,15 @@ export async function activate(context: vscode.ExtensionContext) {
       return;
     collectorError = undefined;
     try {
-      collector = await startCollector({
+      const candidate = await startCollector({
         ...connection,
         projectId: "host",
         file: "",
         storeId,
         route: (sessionId) => routeWindow(storage, sessionId),
       });
+      if (disposed) await candidate.close();
+      else collector = candidate;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
         try {
@@ -507,10 +538,13 @@ export async function activate(context: vscode.ExtensionContext) {
       await Promise.all(
         ids.slice(start, start + 8).map(async (id) => {
           try {
-            const project: Project = JSON.parse(
-              await readFile(join(root, id, "project.json"), "utf8"),
+            const project = restoreProject(
+              JSON.parse(
+                await readFile(join(root, id, "project.json"), "utf8"),
+              ),
             );
-            if (project.id !== id || typeof project.name !== "string") return;
+            if (!project || project.id !== id)
+              throw new Error("Invalid saved project metadata.");
             projects.push(project);
             if (!tailers.has(id))
               tailers.set(id, new UsageTailer(capture(id), id));
@@ -668,6 +702,7 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   async function refresh(): Promise<Snapshot> {
+    if (disposed) return snapshot;
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async () => {
       try {
@@ -684,6 +719,7 @@ export async function activate(context: vscode.ExtensionContext) {
           ],
         };
       }
+      if (disposed) return snapshot;
       const today = totals(filterCalls(snapshot.calls, current?.id ?? "", 1));
       const todayCost = costs(
         filterCalls(snapshot.calls, current?.id ?? "", 1),
@@ -708,7 +744,7 @@ export async function activate(context: vscode.ExtensionContext) {
       return snapshot;
     })().finally(() => {
       refreshPromise = undefined;
-      if (snapshot.indexing && !indexingTimer)
+      if (!disposed && snapshot.indexing && !indexingTimer)
         indexingTimer = setTimeout(() => {
           indexingTimer = undefined;
           void refresh();
@@ -822,7 +858,7 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   async function enable() {
-    if (changingSettings) return;
+    if (disposed || changingSettings) return;
     const problem = blocker();
     if (problem) {
       await vscode.window.showWarningMessage(problem);
@@ -860,6 +896,10 @@ export async function activate(context: vscode.ExtensionContext) {
           storeId,
           route: (sessionId) => routeWindow(storage, sessionId),
         });
+        if (disposed) {
+          await candidate.close();
+          return;
+        }
         connection = { port: candidate.port, token };
         try {
           await writeFile(
@@ -867,6 +907,10 @@ export async function activate(context: vscode.ExtensionContext) {
             JSON.stringify(connection),
             { flag: "wx", mode: 0o600 },
           );
+          if (disposed) {
+            await candidate.close();
+            return;
+          }
           collector = candidate;
         } catch (error) {
           await candidate.close();
@@ -878,6 +922,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }
       }
       await ensureCollector(true);
+      if (disposed) return;
       if (collectorError) throw new Error(collectorError);
       const desired: Record<string, unknown> = {
         captureContent: false,
@@ -1076,7 +1121,7 @@ export async function activate(context: vscode.ExtensionContext) {
               priceTableDate: PRICING_DATE,
               projects: snapshot.projects
                 .filter((p) => projectId === "all" || p.id === projectId)
-                .map(({ pathHashes, ...p }) => p),
+                .map(({ pathHashes, exactPathHashes, ...p }) => p),
               calls,
             },
             null,
@@ -1226,12 +1271,24 @@ export async function activate(context: vscode.ExtensionContext) {
   const timer = setInterval(() => {
     void refresh();
   }, 5_000);
+  let disposalPromise: Promise<void> | undefined;
+  const dispose = () => {
+    if (disposalPromise) return disposalPromise;
+    disposed = true;
+    clearInterval(timer);
+    if (indexingTimer) clearTimeout(indexingTimer);
+    panel?.dispose();
+    disposalPromise = (async () => {
+      await collector?.close();
+      collector = undefined;
+      if (refreshPromise) await refreshPromise;
+    })();
+    return disposalPromise;
+  };
+  stopHost = dispose;
   context.subscriptions.push({
     dispose: () => {
-      clearInterval(timer);
-      if (indexingTimer) clearTimeout(indexingTimer);
-      panel?.dispose();
-      void collector?.close();
+      void dispose();
     },
   });
   void refresh();

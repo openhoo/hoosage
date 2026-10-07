@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -116,9 +123,34 @@ try {
       throw new Error(JSON.stringify(response.exceptionDetails));
     return response.result.value;
   };
+  const key = async (value, modifiers = 0) => {
+    await send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: value,
+      modifiers,
+    });
+    await send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: value,
+      modifiers,
+    });
+  };
+  const screenshot = async (name) => {
+    const directory = process.env.HOOSAGE_UI_SCREENSHOT_DIR;
+    if (!directory) return;
+    await mkdir(directory, { recursive: true });
+    const result = await send("Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: false,
+    });
+    await writeFile(
+      join(directory, `${name}.png`),
+      Buffer.from(result.data, "base64"),
+    );
+  };
   const click = async (selector) => {
     const box = await evaluate(
-      `(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!node) return null; const r = node.getBoundingClientRect(); return { x: r.x+r.width/2, y: r.y+r.height/2 }; })()`,
+      `(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!node) return null; node.scrollIntoView({ block: "center", inline: "center" }); const r = node.getBoundingClientRect(); return { x: r.x+r.width/2, y: r.y+r.height/2 }; })()`,
     );
     assert.ok(box, `${selector} missing`);
     await send("Input.dispatchMouseEvent", {
@@ -143,7 +175,7 @@ try {
   };
   await send("Runtime.enable");
   await send("Page.enable");
-  for (const width of [1408, 390]) {
+  for (const width of [1408, 768, 390, 320]) {
     await send("Emulation.setDeviceMetricsOverride", {
       width,
       height: 900,
@@ -152,7 +184,52 @@ try {
     });
     await send("Page.navigate", { url });
     await new Promise((resolve) => setTimeout(resolve, 200));
+    for (const page of ["overview", "projects", "activity", "about"]) {
+      await click(`[data-page="${page}"]`);
+      assert.equal(
+        await evaluate(
+          "document.documentElement.scrollWidth <= window.innerWidth",
+        ),
+        true,
+        `${width}px: ${page} has no horizontal page overflow`,
+      );
+      assert.equal(
+        await evaluate(
+          `document.querySelector('.nav-item[data-page="${page}"]').getAttribute("aria-label")`,
+        ),
+        {
+          overview: "Overview",
+          projects: "Projects",
+          activity: "Activity",
+          about: "Usage details",
+        }[page],
+        `${width}px: icon navigation has a clear name`,
+      );
+      await screenshot(`${width}-${page}`);
+    }
+    await click('[data-page="overview"]');
     await click('[data-focus="calendar-trigger"]');
+    const focusedDay = await evaluate(
+      "document.activeElement.dataset.calendarDay",
+    );
+    assert.ok(
+      focusedDay,
+      `${width}px: opening the calendar moves focus to a date`,
+    );
+    await key("ArrowLeft");
+    assert.notEqual(
+      await evaluate("document.activeElement.dataset.calendarDay"),
+      focusedDay,
+      `${width}px: arrow key moves date focus`,
+    );
+    await key("Escape");
+    assert.equal(
+      await evaluate("document.activeElement.dataset.focus"),
+      "calendar-trigger",
+      `${width}px: Escape restores trigger focus`,
+    );
+    await click('[data-focus="calendar-trigger"]');
+    await screenshot(`${width}-calendar`);
     assert.equal(
       await evaluate('Boolean(document.querySelector(".calendar-popover"))'),
       true,
@@ -269,8 +346,129 @@ try {
       `${width}px: outside click closes calendar`,
     );
   }
+  // Real-host fixture: snapshots and status updates must not steal keyboard focus.
+  await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `window.acquireVsCodeApi = () => ({ getState: () => ({}), setState: () => {}, postMessage: message => { window.hostMessages = [...(window.hostMessages || []), message]; } });`,
+  });
+  await send("Page.navigate", { url });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const now = Date.now();
+  const fixture = {
+    projects: [
+      {
+        id: "synthetic",
+        name: "A very long synthetic project name <script>",
+        kind: "folder",
+        folderCount: 1,
+        createdAt: now,
+      },
+    ],
+    calls: [
+      {
+        id: "synthetic-call",
+        projectId: "synthetic",
+        timestamp: now,
+        model: "Unknown synthetic model",
+        failed: false,
+      },
+    ],
+    status: "active",
+    statusDetail: "Synthetic tracking fixture",
+    updatedAt: now,
+    skippedLines: 0,
+    errors: [],
+  };
+  const snapshot = async (value) =>
+    evaluate(
+      `window.dispatchEvent(new MessageEvent("message", { data: { type: "snapshot", snapshot: ${JSON.stringify(value)} } }))`,
+    );
+  await snapshot(fixture);
+  assert.equal(
+    await evaluate('document.querySelectorAll(".stat-number")[1].textContent'),
+    "—",
+    "unknown usage remains unknown",
+  );
+  const accessibility = await send("Accessibility.getFullAXTree");
+  assert.ok(
+    accessibility.nodes.some(
+      (node) =>
+        !node.ignored && node.name?.value?.includes("incomplete token data"),
+    ),
+    "incomplete chart buckets reach the accessibility tree",
+  );
+  await click('[data-page="about"]');
+  await evaluate('document.querySelector("[data-action=settings]").focus()');
+  const settingsFocus = await evaluate("document.activeElement.dataset.focus");
+  await snapshot(fixture);
+  assert.equal(
+    await evaluate("document.activeElement.dataset.focus"),
+    settingsFocus,
+    "incoming snapshot preserves settings focus",
+  );
+  await click('[data-page="projects"]');
+  assert.equal(
+    await evaluate('Boolean(document.querySelector(".projects-card script"))'),
+    false,
+    "project labels are escaped",
+  );
+  await click(".project-cards [data-project]");
+  assert.equal(
+    await evaluate("document.activeElement.dataset.focus"),
+    "page-heading",
+    "project drill-down moves focus to its destination",
+  );
+  await click('[data-action="refresh"]');
+  assert.equal(
+    await evaluate('document.querySelector(".toast").textContent'),
+    "Refreshing…",
+    "refresh announces pending state",
+  );
+  await evaluate(
+    'window.originalToast = document.querySelector(".toast"); document.querySelector("[data-focus=days-7]").focus()',
+  );
+  await snapshot(fixture);
+  assert.equal(
+    await evaluate('document.querySelector(".toast") === window.originalToast'),
+    true,
+    "live status region remains stable across snapshot renders",
+  );
+  assert.equal(
+    await evaluate('document.querySelector(".toast").textContent'),
+    "Usage refreshed.",
+    "refresh announces successful response",
+  );
+  assert.equal(
+    await evaluate("document.activeElement.dataset.focus"),
+    "days-7",
+    "refresh response preserves focus",
+  );
+  await snapshot({
+    ...fixture,
+    calls: [],
+    indexing: true,
+    errors: ["Synthetic local file error"],
+  });
+  assert.equal(
+    await evaluate(
+      'Boolean(document.querySelector(".onboarding[aria-busy=true]"))',
+    ),
+    true,
+    "indexing state is explicit",
+  );
+  assert.equal(
+    await evaluate('document.querySelector(".notice").textContent'),
+    "Synthetic local file error",
+    "error state is visible",
+  );
+  await snapshot({ ...fixture, calls: [], status: "blocked", indexing: false });
+  assert.equal(
+    await evaluate('document.querySelector(".onboarding h2").textContent'),
+    "Tracking unavailable",
+    "blocked empty state is explicit",
+  );
+  await screenshot("320-blocked");
   console.log(
-    "Calendar month, day, Apply, and custom range passed at desktop and mobile widths.",
+    "Dashboard navigation, responsive layouts, calendar keyboard/mouse behavior, unknown usage, live announcements, focus preservation, and empty/error states passed.",
   );
 } finally {
   socket?.close();

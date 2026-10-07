@@ -10,13 +10,13 @@ overrides can prevent upstream delivery; diagnostics report these conflicts.
 Never bypass organization policy just to make the dashboard update.
 
 Workspace URI hashes and registered extension-host session IDs select projects;
-the active editor does not. Same-named folders/clones/worktrees remain distinct.
+the active editor does not. Same-named folders/clones/worktrees and case-distinct POSIX folders remain distinct. Reopen older workspace groups to upgrade local case-preserving attribution hashes; unmigrated ambiguous groups stay unassigned.
 Multi-root workspaces are a Workspace group; open roots separately when separate
 attribution is needed. Missing source files/history are not measured zeros.
 
 Local stored usage is profile/host-specific and outside repositories. Startup
 indexes usage and imports allowlisted metadata from surviving VS Code transcripts.
-It cannot recover deleted transcripts or manufacture historical token counts.
+Later scans can fill in metadata that completed after the first import. Hashed request/message aliases deduplicate late identifiers; multi-call input remains unknown. It cannot recover deleted transcripts or manufacture historical token counts.
 Imported entries after the first day of live capture are excluded from totals
 to avoid double counting. Diagnostics show indexing and collection states
 without exposing raw storage paths, collector tokens, or message content.

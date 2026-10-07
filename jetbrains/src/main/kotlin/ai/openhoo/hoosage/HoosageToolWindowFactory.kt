@@ -8,6 +8,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.JBUI
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Dimension
@@ -36,13 +38,16 @@ import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JFileChooser
 import javax.swing.JLabel
+import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JScrollPane
 import javax.swing.JTable
 import javax.swing.JTextArea
 import javax.swing.SwingConstants
 import javax.swing.UIManager
+import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.DefaultTableModel
+import javax.swing.table.TableRowSorter
 
 class HoosageToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -57,6 +62,7 @@ class HoosageToolWindowFactory : ToolWindowFactory, DumbAware {
 private class UsageView(private val project: Project) : Disposable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val scanner = UsageScanner()
+    private val refreshLock = Mutex()
     private val projectPath: Path? = project.basePath?.let { Paths.get(it) }
     private val heading = JLabel("hoosage.")
     private val status = note("Reading local Copilot usage…")
@@ -76,8 +82,9 @@ private class UsageView(private val project: Project) : Disposable {
         val header = JPanel(BorderLayout(0, 8)).apply {
             border = JBUI.Borders.empty(16, 16, 12, 16)
             add(heading, BorderLayout.NORTH)
-            add(JLabel("Copilot usage · ${project.name}").apply {
-                toolTipText = project.name
+            add(JLabel().apply {
+                putClientProperty("html.disable", true)
+                text = "Copilot usage · ${project.name}"
             }, BorderLayout.CENTER)
             add(JPanel(GridLayout(2, 2, 8, 8)).apply {
                 add(days); add(refresh); add(export); add(preview)
@@ -100,6 +107,8 @@ private class UsageView(private val project: Project) : Disposable {
         component.add(header, BorderLayout.NORTH)
         component.add(JScrollPane(body).apply { border = BorderFactory.createEmptyBorder() }, BorderLayout.CENTER)
         component.add(status.apply { border = JBUI.Borders.empty(8, 16) }, BorderLayout.SOUTH)
+        days.accessibleContext.accessibleName = "Usage date range"
+        days.toolTipText = "Filter usage by completed session date"
         days.selectedIndex = 2
         days.addActionListener { render() }
         refresh.addActionListener { requestRefresh() }
@@ -124,10 +133,25 @@ private class UsageView(private val project: Project) : Disposable {
     private fun requestRefresh() { scope.launch { scanAndRender() } }
 
     private suspend fun scanAndRender() {
-        val path = projectPath
-        val result = if (path == null) ScanResult(emptyList(), 0, "Open a local project to see usage.")
-            else withContext(Dispatchers.IO) { scanner.scan(path) }
-        withContext(Dispatchers.EDT) { latest = result; render() }
+        // Coalesce manual and periodic refreshes instead of queuing scans and
+        // allowing an older result to replace the newest one on the EDT.
+        if (!refreshLock.tryLock()) return
+        try {
+            withContext(Dispatchers.EDT) { refresh.isEnabled = false }
+            val path = projectPath
+            val result = try {
+                if (path == null) ScanResult(emptyList(), 0, "Open a local project to see usage.")
+                else withContext(Dispatchers.IO) { scanner.scan(path) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                ScanResult(emptyList(), 1, "Could not read local Copilot usage. Refresh to try again.")
+            }
+            withContext(Dispatchers.EDT) { latest = result; render() }
+        } finally {
+            refreshLock.unlock()
+            if (scope.isActive) withContext(Dispatchers.EDT) { refresh.isEnabled = true }
+        }
     }
 
     private fun selected(): List<UsageEntry> {
@@ -150,7 +174,7 @@ private class UsageView(private val project: Project) : Disposable {
         update(models, byModel.map { (model, calls) ->
             arrayOf(model, countLabel(calls.map { it.requests }), countLabel(calls.map { tokens(it) }), costLabel(calls))
         })
-        val date = DateTimeFormatter.ofPattern("MMM d, HH:mm", Locale.getDefault()).withZone(ZoneId.systemDefault())
+        val date = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.getDefault()).withZone(ZoneId.systemDefault())
         update(sessions, entries.take(100).map {
             arrayOf(date.format(it.timestamp), it.model, it.requests?.toString() ?: "—",
                 tokens(it)?.toString() ?: "—", it.nanoAiu?.let { value -> usd(BigInteger.valueOf(value)) } ?: "—")
@@ -172,8 +196,18 @@ private class UsageView(private val project: Project) : Disposable {
         val chooser = JFileChooser().apply { selectedFile = java.io.File("hoosage-jetbrains.csv") }
         if (chooser.showSaveDialog(component) != JFileChooser.APPROVE_OPTION) return
         val destination = chooser.selectedFile.toPath()
+        if (Files.exists(destination) && JOptionPane.showConfirmDialog(component,
+                "Replace the existing CSV file?", "Export CSV", JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION) return
         scope.launch {
-            val result = runCatching { withContext(Dispatchers.IO) { Files.writeString(destination, exportCsv(entries)) } }
+            val result = try {
+                withContext(Dispatchers.IO) { Files.writeString(destination, exportCsv(entries)) }
+                Result.success(Unit)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Result.failure<Unit>(error)
+            }
             withContext(Dispatchers.EDT) {
                 status.text = if (result.isSuccess) "Exported ${entries.size} usage records."
                     else "Could not write CSV: ${result.exceptionOrNull()?.javaClass?.simpleName}."
@@ -187,7 +221,16 @@ private class UsageView(private val project: Project) : Disposable {
 private fun table(columns: Array<String>): JTable = JTable(object : DefaultTableModel(columns, 0) {
     override fun isCellEditable(row: Int, column: Int) = false
 }).apply {
-    autoCreateRowSorter = true
+    rowSorter = TableRowSorter(model).apply {
+        for (column in columns.indices) {
+            if (columns[column] in setOf("Requests", "Tokens", "USD")) {
+                setComparator(column, Comparator<Any> { left, right ->
+                    compareUsageValues(left.toString(), right.toString())
+                })
+            }
+        }
+    }
+    setDefaultRenderer(Any::class.java, plainTextCellRenderer())
     fillsViewportHeight = true
     rowHeight = JBUI.scale(28)
     autoResizeMode = JTable.AUTO_RESIZE_OFF
@@ -196,11 +239,30 @@ private fun table(columns: Array<String>): JTable = JTable(object : DefaultTable
     for (column in columns.indices) {
         columnModel.getColumn(column).preferredWidth = when (columns[column]) {
             "Model" -> JBUI.scale(150)
-            "Completed" -> JBUI.scale(110)
+            "Completed" -> JBUI.scale(155)
             else -> JBUI.scale(90)
         }
     }
     accessibleContext.accessibleName = columns.joinToString(" / ")
+}
+
+/** Local metadata is plain text; Swing HTML must not load external images. */
+internal fun plainTextCellRenderer(): DefaultTableCellRenderer = DefaultTableCellRenderer().apply {
+    putClientProperty("html.disable", true)
+}
+
+/** Compare formatted totals numerically, including unknown and partial values. */
+internal fun compareUsageValues(left: String, right: String): Int {
+    fun number(value: String): BigDecimal? = value.trim().removePrefix("<")
+        .removePrefix("$").removeSuffix("+").replace(",", "").toBigDecimalOrNull()
+    val a = number(left)
+    val b = number(right)
+    return when {
+        a == null && b == null -> 0
+        a == null -> 1
+        b == null -> -1
+        else -> a.compareTo(b)
+    }
 }
 
 private fun update(table: JTable, rows: List<Array<String>>) {

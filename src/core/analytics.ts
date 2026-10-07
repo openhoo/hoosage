@@ -26,7 +26,9 @@ export function totals(calls: UsageCall[]): Totals {
     sessions: new Set(
       calls
         .filter((c) => c.sessionId)
-        .map((c) => `${c.projectId}:${c.sessionId}`),
+        .map((c) =>
+          JSON.stringify([c.projectId, c.source ?? "chat", c.sessionId]),
+        ),
     ).size,
     missingUsage: calls.filter(
       (c) => c.input === undefined || c.output === undefined,

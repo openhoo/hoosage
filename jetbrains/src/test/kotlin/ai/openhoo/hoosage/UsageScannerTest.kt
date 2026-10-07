@@ -102,6 +102,72 @@ class UsageScannerTest {
         } finally { root.toFile().deleteRecursively() }
     }
 
+    @Test fun `equivalent normalized paths do not discard valid usage`() {
+        val root = Files.createTempDirectory("hoosage-jb-")
+        try {
+            val project = Files.createDirectory(root.resolve("project"))
+            val state = Files.createDirectory(root.resolve("state"))
+            session(state, "jetbrains", "copilot-intellij", project, listOf(
+                shutdown("one", 100, 20, 1, 100),
+                """{"type":"session.resume","data":{"context":{"cwd":"$project/../project"}}}""",
+                shutdown("two", 150, 30, 2, 150),
+            ))
+            val result = UsageScanner(state).scan(project)
+            assertEquals(listOf(50L, 100L), result.entries.mapNotNull { it.input }.sorted())
+            assertEquals(0, result.skipped)
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test fun `escaped YAML paths are decoded and ambiguous client fields are excluded`() {
+        val root = Files.createTempDirectory("hoosage-jb-")
+        try {
+            val project = Files.createDirectory(root.resolve("project's \"one\""))
+            val state = Files.createDirectory(root.resolve("state"))
+            session(state, "jetbrains", "copilot-intellij", project, listOf(shutdown("one", 100, 20, 1, 0)))
+            val workspace = state.resolve("jetbrains/workspace.yaml")
+            val scanner = UsageScanner(state)
+            val quotedPath = com.google.gson.Gson().toJson(project.toString())
+            Files.writeString(workspace, "client_name: copilot-intellij\ncwd: $quotedPath # local path\n")
+            assertEquals(1, scanner.scan(project).entries.size)
+            val singleQuotedPath = project.toString().replace("'", "''")
+            Files.writeString(workspace, "client_name: 'copilot-intellij'\ncwd: '$singleQuotedPath'\n")
+            assertEquals(1, scanner.scan(project).entries.size)
+            Files.writeString(workspace, "client_name: copilot-cli\nclient_name: copilot-intellij\ncwd: $quotedPath\n")
+            assertTrue(scanner.scan(project).entries.isEmpty())
+            Files.writeString(workspace, "nested:\n  client_name: copilot-intellij\ncwd: $quotedPath\n")
+            assertTrue(scanner.scan(project).entries.isEmpty())
+            Files.writeString(workspace, "client_name: 'copilot-intellij'junk\ncwd: $quotedPath\n")
+            assertTrue(scanner.scan(project).entries.isEmpty())
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test fun `CSV quotes controls and preserves unknown counts`() {
+        val record = UsageEntry(Instant.parse("2026-09-23T10:00:00Z"), "  @formula,\"model\"\nnext",
+            "secret-session", null, null, null, null, null, null)
+        val csv = exportCsv(listOf(record))
+        assertTrue(csv.contains("'  @formula,\"\"model\"\"\nnext"))
+        assertTrue(csv.endsWith("\"\",\"\",\"\",\"\",\"\",\"\"\n"))
+        assertFalse(csv.contains("secret-session"))
+    }
+
+    @Test fun `table totals sort numerically instead of by their formatted text`() {
+        assertTrue(compareUsageValues("9", "100") < 0)
+        assertTrue(compareUsageValues("1,000+", "90") > 0)
+        assertTrue(compareUsageValues("$9.0000", "$100.0000") < 0)
+        assertTrue(compareUsageValues("<$0.0001", "$0.0002+") < 0)
+        assertTrue(compareUsageValues("—", "0") > 0)
+        assertEquals(0, compareUsageValues("—", "—"))
+    }
+
+    @Test fun `model names render as plain text without creating Swing HTML views`() {
+        val renderer = plainTextCellRenderer()
+        val label = renderer.getTableCellRendererComponent(javax.swing.JTable(1, 1),
+            "<html><b>untrusted model</b></html>", false, false, 0, 0) as javax.swing.JLabel
+        assertEquals("<html><b>untrusted model</b></html>", label.text)
+        assertEquals(true, label.getClientProperty("html.disable"))
+        assertEquals(null, label.getClientProperty(javax.swing.plaf.basic.BasicHTML.propertyKey))
+    }
+
     private fun session(root: Path, id: String, client: String, cwd: Path, events: List<String>) {
         val dir = Files.createDirectory(root.resolve(id))
         Files.writeString(dir.resolve("workspace.yaml"), "client_name: $client\ncwd: $cwd\n")
