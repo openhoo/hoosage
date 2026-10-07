@@ -15,7 +15,7 @@ const BATCH = 4 * 1024 * 1024;
 const MAX_SKEW = 24 * 60 * 60 * 1000;
 const EMPTY = Buffer.alloc(0);
 /** Bump when the cached reader state changes shape. */
-const CACHE_FORMAT = 1;
+const CACHE_FORMAT = 2;
 const SAVE_INTERVAL_MS = 30_000;
 
 /** Attribution bucket for CLI sessions whose cwd matches no known project. */
@@ -57,6 +57,8 @@ interface FileState {
   /** Event ordinal within this file; disambiguates events lacking an id. */
   seq: number;
   emitted: Set<string>;
+  /** Usage event IDs already applied to cumulative counters. */
+  seenEvents: Set<string>;
   baselines: Map<string, ModelSnapshot>;
   /** workspace.yaml probe: undefined until read, null when absent/unreadable. */
   workspace?: { clientName?: string; cwd?: string } | null;
@@ -75,6 +77,7 @@ const freshState = (): FileState => ({
   dropping: false,
   seq: 0,
   emitted: new Set(),
+  seenEvents: new Set(),
   baselines: new Map(),
   totalOffset: 0,
   accounted: 0,
@@ -193,6 +196,12 @@ function restoreFile(
       nanoAiu: num(baseline.nanoAiu),
     });
   }
+  if (
+    !Array.isArray(saved.seenEvents) ||
+    saved.seenEvents.some((id) => typeof id !== "string")
+  )
+    return undefined;
+  st.seenEvents = new Set(saved.seenEvents as string[]);
   if (!Array.isArray(saved.calls)) return undefined;
   const calls: CachedCall[] = [];
   for (const item of saved.calls) {
@@ -397,6 +406,7 @@ export class CliUsageScanner {
         inode: st.inode,
         dropping: st.dropping,
         seq: st.seq,
+        seenEvents: [...st.seenEvents],
         cwd: st.cwd,
         workspace: st.workspace ?? undefined,
         model: st.model,
@@ -628,16 +638,20 @@ export class CliUsageScanner {
         requests: num(record(entry?.requests)?.count),
         nanoAiu: num(entry?.totalNanoAiu),
       };
-      if (
-        !snapshot.input &&
-        !snapshot.output &&
-        !snapshot.cacheRead &&
-        !snapshot.cacheWrite &&
-        !snapshot.requests &&
-        !snapshot.nanoAiu
-      )
+      if (Object.values(snapshot).every((value) => value === undefined))
         continue;
-      const baseline = st.baselines.get(model);
+      let baseline = st.baselines.get(model);
+      // CLI compaction/resume can restart model counters without a session
+      // cost counter. A decreasing request counter (or both token counters)
+      // identifies a new run; its first snapshot must count in full.
+      const decreased = (current?: number, previous?: number) =>
+        current !== undefined && previous !== undefined && current < previous;
+      if (
+        decreased(snapshot.requests, baseline?.requests) ||
+        (decreased(snapshot.input, baseline?.input) &&
+          decreased(snapshot.output, baseline?.output))
+      )
+        baseline = undefined;
       const delta: ModelSnapshot = {
         input: deltaCount(snapshot.input, baseline?.input),
         output: deltaCount(snapshot.output, baseline?.output),
@@ -719,6 +733,10 @@ export class CliUsageScanner {
           : // Events without an id fall back to timestamp + file ordinal, so
             // same-millisecond events cannot overwrite each other.
             `t${timestamp}-${st.seq}`;
+    // Replayed events must not roll back baselines, restart session counters,
+    // or overwrite an earlier emitted interval. Persist this across windows.
+    if (st.seenEvents.has(eventId)) return undefined;
+    st.seenEvents.add(eventId);
     return { timestamp, eventId };
   }
 

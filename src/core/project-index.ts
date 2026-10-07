@@ -9,21 +9,41 @@ import {
 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { folderPathHash } from "./cli";
+import { exactFolderPathHash } from "./path-identity";
 import type { Project, UsageCall } from "./types";
 
 /** Match known workspaces first, then discover projects from local session cwd. */
 export class ProjectIndex {
   private readonly known = new Map<string, string | undefined>();
+  private readonly exact = new Map<string, string | undefined>();
+  private readonly legacy = new Map<string, Project[]>();
   private readonly discovered = new Map<string, Project>();
   private readonly resolved = new Map<string, string | undefined>();
 
-  constructor(projects: Project[]) {
-    for (const project of projects)
+  constructor(
+    projects: Project[],
+    private readonly caseSensitive = process.platform !== "win32",
+  ) {
+    const register = (
+      map: Map<string, string | undefined>,
+      hash: string,
+      id: string,
+    ) => {
+      if (!map.has(hash)) map.set(hash, id);
+      else if (map.get(hash) !== id) map.set(hash, undefined);
+    };
+    for (const project of projects) {
+      for (const hash of project.exactPathHashes ?? [])
+        register(this.exact, hash, project.id);
       for (const hash of project.pathHashes ?? []) {
-        if (!this.known.has(hash)) this.known.set(hash, project.id);
-        else if (this.known.get(hash) !== project.id)
-          this.known.set(hash, undefined);
+        register(this.known, hash, project.id);
+        if (!project.exactPathHashes?.length) {
+          const candidates = this.legacy.get(hash) ?? [];
+          candidates.push(project);
+          this.legacy.set(hash, candidates);
+        }
       }
+    }
   }
 
   resolve(cwd: string): string | undefined {
@@ -69,15 +89,58 @@ export class ProjectIndex {
         folderCount: 1,
         createdAt: Date.now(),
         pathHashes: [folderPathHash(projectPath)],
+        exactPathHashes: [exactFolderPathHash(projectPath)],
       });
     return id;
   }
 
   private registered(directory: string): { matched: boolean; id?: string } {
     for (let candidate = directory; ; candidate = dirname(candidate)) {
-      const hash = folderPathHash(candidate);
-      if (this.known.has(hash))
-        return { matched: true, id: this.known.get(hash) };
+      if (!this.caseSensitive) {
+        const hash = folderPathHash(candidate);
+        if (this.known.has(hash))
+          return { matched: true, id: this.known.get(hash) };
+      } else {
+        const exactHash = exactFolderPathHash(candidate);
+        if (this.exact.has(exactHash))
+          return { matched: true, id: this.exact.get(exactHash) };
+        const legacy = this.legacy.get(folderPathHash(candidate));
+        if (legacy?.length) {
+          // Closed single-folder records can prove their case-sensitive path
+          // through their unchanged folder URI identity. Workspace groups do
+          // not retain a folder URI, so fail closed until their hashes upgrade.
+          if (legacy.some((project) => project.kind !== "folder"))
+            return { matched: true };
+          // VS Code's URI serialization percent-encodes reserved characters
+          // that Node's file URL leaves literal (including parentheses).
+          // Accept either historical identity, without changing stored IDs.
+          const vscodeUri = `file://${candidate
+            .split("/")
+            .map((segment) =>
+              encodeURIComponent(segment).replace(
+                /[!'()*]/g,
+                (character) =>
+                  `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+              ),
+            )
+            .join("/")}`;
+          const identities = new Set(
+            [pathToFileURL(candidate).toString(), vscodeUri].map((uri) =>
+              createHash("sha256").update(uri).digest("hex").slice(0, 24),
+            ),
+          );
+          const matching = new Set(
+            legacy
+              .filter((project) => identities.has(project.id))
+              .map((project) => project.id),
+          );
+          if (matching.size)
+            return {
+              matched: true,
+              id: matching.size === 1 ? [...matching][0] : undefined,
+            };
+        }
+      }
       if (dirname(candidate) === candidate) return { matched: false };
     }
   }

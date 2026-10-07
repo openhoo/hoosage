@@ -12,6 +12,7 @@ import {
   replayMutationLog,
   requestUsage,
   restoreHistory,
+  storedHistoryPayload,
   scanChatHistory,
   withoutLiveOverlap,
 } from "../src/core/chat-history-import";
@@ -60,7 +61,11 @@ test("rejects unsafe mutation paths and unbounded array operations", () => {
     jsonl(
       { kind: 0, v: { requests: [] } },
       { kind: 1, k: ["__proto__", "hoosageProbe"], v: "modified" },
-      { kind: 1, k: ["constructor", "prototype", "hoosageProbe"], v: "modified" },
+      {
+        kind: 1,
+        k: ["constructor", "prototype", "hoosageProbe"],
+        v: "modified",
+      },
       { kind: 2, k: ["requests"], i: 1_000_000_000, v: [{}] },
       { kind: 1, k: ["requests", "length"], v: 1_000_000_000 },
       { kind: 1, k: ["missing", "child"], v: "ignored" },
@@ -84,7 +89,9 @@ test("skips oversized transcript files without reading them", async () => {
   const p = await profile();
   try {
     const folder = join(p.root, "repo");
-    const sessions = await p.workspace("one", { folder: pathToFileURL(folder).toString() });
+    const sessions = await p.workspace("one", {
+      folder: pathToFileURL(folder).toString(),
+    });
     const handle = await open(join(sessions, "oversized.jsonl"), "w");
     try {
       await handle.truncate(64 * 1024 * 1024 + 1);
@@ -154,7 +161,12 @@ test("recovers requests from jsonl and legacy json transcripts with reported cos
       JSON.stringify({
         sessionId: "s2",
         requests: [
-          { requestId: "r4", timestamp: 500, modelId: "copilot/gpt-4.1", result: {} },
+          {
+            requestId: "r4",
+            timestamp: 500,
+            modelId: "copilot/gpt-4.1",
+            result: {},
+          },
           {
             requestId: "r5",
             timestamp: 600,
@@ -242,7 +254,9 @@ test("registers deleted, remote and multi-root workspaces with history, and dedu
       join(remote, "b.json"),
       JSON.stringify({ requests: [request("c", 30, "copied")] }),
     );
-    const workspaceUri = pathToFileURL(join(p.root, "team.code-workspace")).toString();
+    const workspaceUri = pathToFileURL(
+      join(p.root, "team.code-workspace"),
+    ).toString();
     await writeFile(
       join(await p.workspace("multi", { workspace: workspaceUri }), "a.json"),
       JSON.stringify({ requests: [request("d", 40)] }),
@@ -264,8 +278,13 @@ test("registers deleted, remote and multi-root workspaces with history, and dedu
     assert.equal(projects.get(idOf(remoteUri))!.pathHashes, undefined);
     assert.equal(projects.get(idOf(workspaceUri))!.name, "team");
     assert.equal(projects.get(idOf(workspaceUri))!.kind, "workspace");
-    const remoteCalls = history.calls.filter((c) => c.projectId === idOf(remoteUri));
-    assert.deepEqual(remoteCalls.map((c) => c.timestamp), [20]);
+    const remoteCalls = history.calls.filter(
+      (c) => c.projectId === idOf(remoteUri),
+    );
+    assert.deepEqual(
+      remoteCalls.map((c) => c.timestamp),
+      [20],
+    );
     assert.deepEqual(
       history.calls
         .filter((c) => c.projectId === NO_FOLDER_CHAT_PROJECT_ID)
@@ -305,14 +324,318 @@ test("counts all earlier imported requests, then uses a live-day coverage bounda
   const before = new Date(2025, 0, 1, 12).getTime();
   const liveDay = new Date(2025, 0, 2, 12).getTime();
   const imported = [
-    { id: "1", projectId: "p", timestamp: before, durationMs: 60_000, model: "m", failed: false },
-    { id: "2", projectId: "p", timestamp: before + 1_000, durationMs: 60_000, model: "m", failed: false },
-    { id: "3", projectId: "p", timestamp: liveDay - 60_000, durationMs: 60_000, model: "m", failed: false },
-    { id: "4", projectId: "p", timestamp: liveDay, durationMs: 60_000, model: "m", failed: false },
+    {
+      id: "1",
+      projectId: "p",
+      timestamp: before,
+      durationMs: 60_000,
+      model: "m",
+      failed: false,
+    },
+    {
+      id: "2",
+      projectId: "p",
+      timestamp: before + 1_000,
+      durationMs: 60_000,
+      model: "m",
+      failed: false,
+    },
+    {
+      id: "3",
+      projectId: "p",
+      timestamp: liveDay - 60_000,
+      durationMs: 60_000,
+      model: "m",
+      failed: false,
+    },
+    {
+      id: "4",
+      projectId: "p",
+      timestamp: liveDay,
+      durationMs: 60_000,
+      model: "m",
+      failed: false,
+    },
   ];
   assert.deepEqual(
     withoutLiveOverlap(imported, [liveDay]).map((c) => c.id),
     ["1", "2"],
   );
-  assert.deepEqual(withoutLiveOverlap(imported, []).map((c) => c.id), ["1", "2", "3", "4"]);
+  assert.deepEqual(
+    withoutLiveOverlap(imported, []).map((c) => c.id),
+    ["1", "2", "3", "4"],
+  );
+});
+
+test("stored requests receive late usage metadata without changing attribution", () => {
+  const initial = requestUsage(
+    {
+      requestId: "late-request",
+      timestamp: 1000,
+      modelId: "auto",
+      result: {},
+    },
+    "original-project",
+    "original-session",
+  )!;
+  const completed = requestUsage(
+    {
+      requestId: "late-request",
+      timestamp: 1000,
+      modelId: "gpt-5.4",
+      copilotCredits: 2,
+      completionTokens: 80,
+      elapsedMs: 500,
+      result: { metadata: { promptTokens: 100, toolCallRounds: [{}] } },
+    },
+    "copied-project",
+    "copied-session",
+  )!;
+  const merged = mergeStoredHistory([initial], [completed]);
+  assert.equal(merged.changed, true);
+  assert.equal(merged.calls.length, 1);
+  assert.equal(merged.calls[0]!.projectId, "original-project");
+  assert.equal(merged.calls[0]!.sessionId, "original-session");
+  assert.equal(merged.calls[0]!.input, 100);
+  assert.equal(merged.calls[0]!.output, 80);
+  assert.equal(merged.calls[0]!.nanoAiu, 2_000_000_000);
+  assert.equal(merged.calls[0]!.model, "gpt-5.4");
+  assert.equal(mergeStoredHistory(merged.calls, [completed]).changed, false);
+  // A stale copied transcript cannot erase known usage.
+  assert.equal(mergeStoredHistory(merged.calls, [initial]).changed, false);
+});
+
+test("growing tool rounds clear single-call input and stale copies cannot roll back usage", () => {
+  const single = requestUsage(
+    {
+      requestId: "rounds",
+      timestamp: 1000,
+      completionTokens: 20,
+      copilotCredits: 1,
+      result: { metadata: { promptTokens: 100, toolCallRounds: [{}] } },
+    },
+    "project",
+    "session",
+  )!;
+  const multiple = requestUsage(
+    {
+      requestId: "rounds",
+      timestamp: 1000,
+      completionTokens: 200,
+      copilotCredits: 2,
+      result: { metadata: { promptTokens: 150, toolCallRounds: [{}, {}] } },
+    },
+    "project",
+    "session",
+  )!;
+  const completed = mergeStoredHistory([single], [multiple]);
+  assert.equal(completed.calls[0]!.input, undefined);
+  assert.equal(completed.calls[0]!.requests, 2);
+  assert.equal(completed.calls[0]!.output, 200);
+  const stale = mergeStoredHistory(completed.calls, [single]);
+  assert.equal(stale.changed, false);
+  assert.equal(stale.calls[0]!.input, undefined);
+  assert.equal(stale.calls[0]!.output, 200);
+  assert.equal(stale.calls[0]!.nanoAiu, 2_000_000_000);
+});
+
+test("late model-message identity upgrades stored requests without counting twice", () => {
+  const initial = requestUsage(
+    { requestId: "late", timestamp: 1000, result: {} },
+    "original",
+    "session",
+  )!;
+  const completed = requestUsage(
+    {
+      requestId: "late",
+      timestamp: 1000,
+      completionTokens: 200,
+      result: {
+        metadata: { modelMessageId: "message-late", toolCallRounds: [{}, {}] },
+      },
+    },
+    "copy",
+    "copied-session",
+  )!;
+  assert.notEqual(initial.id, completed.id);
+  const merged = mergeStoredHistory([initial], [completed]);
+  assert.equal(merged.calls.length, 1);
+  assert.equal(merged.calls[0]!.id, completed.id);
+  assert.equal(merged.calls[0]!.projectId, "original");
+  assert.equal(merged.calls[0]!.output, 200);
+  // Old storage can already contain both identities from the previous bug.
+  assert.equal(
+    mergeStoredHistory([initial, completed], [completed]).calls.length,
+    1,
+  );
+  // Once upgraded, a copy with a different request ID still matches by message.
+  const copy = requestUsage(
+    {
+      requestId: "copied-late",
+      timestamp: 1000,
+      completionTokens: 200,
+      result: {
+        metadata: { modelMessageId: "message-late", toolCallRounds: [{}, {}] },
+      },
+    },
+    "copy",
+    "copied-session",
+  )!;
+  assert.equal(mergeStoredHistory(merged.calls, [copy]).calls.length, 1);
+  const saved = storedHistoryPayload(merged.calls);
+  assert.ok(!JSON.stringify(saved).includes("dedupeKey"));
+  assert.ok(!JSON.stringify(saved).includes("message-late"));
+  const restored = restoreHistory(
+    JSON.parse(JSON.stringify(saved)),
+    "original",
+  );
+  const stale = mergeStoredHistory(restored, [initial]);
+  assert.equal(stale.calls.length, 1);
+  assert.equal(stale.changed, false);
+  assert.equal(stale.calls[0]!.id, completed.id);
+  assert.equal(stale.calls[0]!.output, 200);
+});
+
+test("cached transcript identity aliases stay private and preserve late-ID merging", async () => {
+  const p = await profile();
+  try {
+    const folder = join(p.root, "repo");
+    const sessions = await p.workspace("one", {
+      folder: pathToFileURL(folder).toString(),
+    });
+    const file = join(sessions, "session.json");
+    const initialRequest = {
+      requestId: "private-request-id",
+      timestamp: 1000,
+      result: {},
+    };
+    await writeFile(file, JSON.stringify({ requests: [initialRequest] }));
+    const cache = { directory: join(p.root, "cache"), key: "test" };
+    const stored = (await scanChatHistory(p.globalStorage, cache)).calls;
+    await writeFile(
+      file,
+      JSON.stringify({
+        requests: [
+          {
+            ...initialRequest,
+            completionTokens: 20,
+            result: {
+              metadata: {
+                modelMessageId: "private-model-message-id",
+                toolCallRounds: [{}],
+              },
+            },
+          },
+        ],
+      }),
+    );
+    await scanChatHistory(p.globalStorage, cache);
+    // Read unchanged transcripts through the persistent cache, which must
+    // retain request aliases without exporting additional call properties.
+    const cached = (await scanChatHistory(p.globalStorage, cache)).calls;
+    const merged = mergeStoredHistory(stored, cached);
+    assert.equal(merged.calls.length, 1);
+    assert.equal(merged.calls[0]!.output, 20);
+    for (const calls of [cached, merged.calls]) {
+      const json = JSON.stringify(calls);
+      assert.ok(!json.includes("private-request-id"));
+      assert.ok(!json.includes("private-model-message-id"));
+      assert.ok(!json.includes("identityAliases"));
+      assert.ok(!json.includes("dedupeKey"));
+    }
+  } finally {
+    await rm(p.root, { recursive: true, force: true });
+  }
+});
+
+test("copied transcripts merge richer usage while retaining earliest attribution", async () => {
+  const p = await profile();
+  try {
+    const originalUri = pathToFileURL(join(p.root, "original")).toString();
+    const copyUri = pathToFileURL(join(p.root, "copy")).toString();
+    const original = await p.workspace("a-original", { folder: originalUri });
+    const copy = await p.workspace("b-copy", { folder: copyUri });
+    await writeFile(
+      join(original, "first.json"),
+      JSON.stringify({
+        sessionId: "original-session",
+        requests: [
+          {
+            requestId: "original-request",
+            timestamp: 1000,
+            result: { metadata: { modelMessageId: "shared-message" } },
+          },
+        ],
+      }),
+    );
+    await writeFile(
+      join(copy, "later.json"),
+      JSON.stringify({
+        sessionId: "copy-session",
+        requests: [
+          {
+            requestId: "copied-request",
+            timestamp: 2000,
+            completionTokens: 200,
+            copilotCredits: 2,
+            result: {
+              metadata: {
+                modelMessageId: "shared-message",
+                toolCallRounds: [{}, {}],
+              },
+            },
+          },
+        ],
+      }),
+    );
+    const cache = { directory: join(p.root, "cache"), key: "test" };
+    for (let scan = 0; scan < 2; scan++) {
+      const history = await scanChatHistory(p.globalStorage, cache);
+      assert.equal(history.calls.length, 1);
+      const call = history.calls[0]!;
+      assert.equal(call.projectId, idOf(originalUri));
+      assert.equal(call.sessionId, "original-session");
+      assert.equal(call.timestamp, 1000);
+      assert.equal(call.requests, 2);
+      assert.equal(call.output, 200);
+      assert.equal(call.nanoAiu, 2_000_000_000);
+      assert.ok(!JSON.stringify(call).includes("shared-message"));
+    }
+  } finally {
+    await rm(p.root, { recursive: true, force: true });
+  }
+});
+
+test("unknown multi-round output clears prior single-round fallback and stale copies cannot restore it", () => {
+  const single = requestUsage(
+    {
+      requestId: "unknown-output",
+      timestamp: 1000,
+      result: { metadata: { outputTokens: 20, toolCallRounds: [{}] } },
+    },
+    "project",
+    "session",
+  )!;
+  const multiple = requestUsage(
+    {
+      requestId: "unknown-output",
+      timestamp: 1000,
+      result: { metadata: { outputTokens: 99, toolCallRounds: [{}, {}] } },
+    },
+    "project",
+    "session",
+  )!;
+  assert.equal(single.output, 20);
+  assert.equal(multiple.output, undefined);
+  const merged = mergeStoredHistory([single], [multiple]);
+  assert.equal(merged.calls[0]!.requests, 2);
+  assert.equal(merged.calls[0]!.output, undefined);
+  const stale = mergeStoredHistory(merged.calls, [single]);
+  assert.equal(stale.changed, false);
+  assert.equal(stale.calls[0]!.output, undefined);
+  const completed = { ...multiple, completionTokens: undefined, output: 200 };
+  assert.equal(
+    mergeStoredHistory(stale.calls, [completed]).calls[0]!.output,
+    200,
+  );
 });

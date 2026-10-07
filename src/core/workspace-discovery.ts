@@ -4,6 +4,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { folderPathHash } from "./cli";
+import { exactFolderPathHash } from "./path-identity";
 import type { Project } from "./types";
 
 /** One VS Code folder window this profile has previously opened, recovered
@@ -13,6 +14,7 @@ export interface KnownFolder {
   id: string;
   name: string;
   pathHash: string;
+  exactPathHash: string;
 }
 
 /** Reads every `workspaceStorage/<hash>/workspace.json` next to this
@@ -44,7 +46,10 @@ export async function discoverKnownFolders(
         if (!entry.isDirectory()) return;
         try {
           const raw = JSON.parse(
-            await readFile(join(storageDir, entry.name, "workspace.json"), "utf8"),
+            await readFile(
+              join(storageDir, entry.name, "workspace.json"),
+              "utf8",
+            ),
           );
           const folderUri: unknown = raw?.folder;
           if (typeof folderUri !== "string") return;
@@ -62,6 +67,7 @@ export async function discoverKnownFolders(
             id,
             name: basename(fsPath),
             pathHash: folderPathHash(fsPath),
+            exactPathHash: exactFolderPathHash(fsPath),
           });
         } catch {
           /* One unreadable, missing or malformed entry cannot block others. */
@@ -81,5 +87,6 @@ export function placeholderProject(folder: KnownFolder): Project {
     folderCount: 1,
     createdAt: Date.now(),
     pathHashes: [folder.pathHash],
+    exactPathHashes: [folder.exactPathHash],
   };
 }

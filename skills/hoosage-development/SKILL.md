@@ -16,7 +16,7 @@ package scripts, and CI take precedence over this guide.
 | VS Code activation, commands, settings | `src/extension.ts`, `package.json` |
 | Authenticated local OTLP collection | `src/core/collector.ts`, `routing.ts`, `environment.ts` |
 | Span parsing and file ingestion | `src/core/parser.ts`, `tailer.ts`, `cli.ts`, `chat-history-import.ts` |
-| Workspace identity, discovery, caches | `src/core/project-index.ts`, `workspace-discovery.ts` |
+| Workspace identity, discovery, caches | `src/core/project-index.ts`, `path-identity.ts`, `project-metadata.ts`, `workspace-discovery.ts` |
 | Usage aggregation and estimates | `src/core/analytics.ts`, `pricing.ts`, `types.ts` |
 | Webview, demo, layout | `src/webview/`, `media/app.css` |
 | JetBrains plugin | `jetbrains/src/main/kotlin/ai/openhoo/hoosage/` |
@@ -31,7 +31,7 @@ npm run check
 npm run package
 ```
 
-`check` runs TypeScript, tests, production build, and calendar UI tests. `package`
+`check` runs TypeScript, unit tests, an extension lifecycle regression, the production build, and dashboard browser tests (including calendar, responsive layout, focus and accessibility). `package`
 produces `hoosage.vsix`; do both before shipping, as `AGENTS.md` requires.
 Use `npm run preview` for labelled sample-data visual work. It does not prove
 the extension host or real Copilot delivery.
@@ -60,9 +60,9 @@ standalone plugin. Preserve the root MIT license and third-party notices.
 
 - Attribute Chat spans through registered session IDs and workspace URI hashes,
   never the active editor or folder display name. Do not merge host/profile,
-  clone, worktree, multi-root, or WSL identities by name.
+  clone, worktree, multi-root, or WSL identities by name. Preserve POSIX path case, legacy project IDs, and both local attribution hash sets; exclude both hash sets from exports.
 - Count completed chat spans once; exclude agent totals/logs/cumulative metrics.
-  CLI cumulative checkpoints need reliable increments and deduplication.
+  CLI cumulative checkpoints need reliable increments and event deduplication across cached restarts. Late transcript metadata must keep multi-call input unknown and retain hashed identity aliases outside exported calls.
 - Missing usage stays unknown, not zero. Cache reads/writes are input subsets.
   Reported per-request cost and estimated cost remain distinguishable; never add
   session totals again to the same per-request costs or claim invoice coverage.

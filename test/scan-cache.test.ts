@@ -266,3 +266,24 @@ test("unchanged Chat transcripts are served from the cache", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("restored CLI counters reject replayed events appended after restart", async () => {
+  const f = await fixture();
+  try {
+    const first = shutdown("first", 1, 1000, 100_000_000_000);
+    const second = shutdown("second", 2, 2000, 200_000_000_000);
+    const file = await f.session("replay-cache", start(f.project) + first + second);
+    const before = new CliUsageScanner(f.root, f.cache);
+    await before.poll(f.resolve);
+    await appendFile(file, first + shutdown("third", 3, 3000, 300_000_000_000));
+    const restored = new CliUsageScanner(f.root, f.cache);
+    await restored.poll(f.resolve);
+    const full = new CliUsageScanner(f.root);
+    await full.poll(f.resolve);
+    assert.deepEqual(view(restored.calls.values()), view(full.calls.values()));
+    assert.equal([...restored.calls.values()].reduce((n, c) => n + (c.input ?? 0), 0), 3000);
+    assert.equal([...restored.calls.values()].reduce((n, c) => n + (c.nanoAiu ?? 0), 0), 300_000_000_000);
+  } finally {
+    await rm(f.dir, { recursive: true, force: true });
+  }
+});

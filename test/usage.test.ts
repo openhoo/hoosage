@@ -349,6 +349,7 @@ test("unlinked calls remain separate and session IDs cannot cross projects or so
     { ...base, id: "six", source: "cli" as const, sessionId: "shared" },
   ];
   const groups = groupSessions(calls);
+  assert.equal(totals(calls).sessions, 3);
   assert.deepEqual(
     groups.map(([, entries]) => entries.map((entry) => entry.id)).sort(),
     [["shared"], ["two"], ["three", "four"], ["five"], ["six"]].sort(),
@@ -516,4 +517,13 @@ test("collector routes a multi-span batch once per window and keeps every call",
     await collector.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+
+test("session totals distinguish delimiter-containing identities", () => {
+  const base = parseSpan(span(), "project:one")!;
+  assert.equal(totals([
+    { ...base, sessionId: "two" },
+    { ...base, projectId: "project", sessionId: "one:two" },
+  ]).sessions, 2);
 });

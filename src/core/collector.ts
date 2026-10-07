@@ -236,13 +236,17 @@ export async function startCollector(
   const address = server.address();
   if (!address || typeof address === "string")
     throw new Error("Invalid listener address");
+  let closing: Promise<void> | undefined;
   return {
     port: address.port,
-    async close() {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
-      await writing;
+    close() {
+      closing ??= (async () => {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+        await writing;
+      })();
+      return closing;
     },
   };
 }

@@ -4,12 +4,8 @@ import { open, readdir, readFile, type FileHandle } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { folderPathHash } from "./cli";
-import {
-  cacheFile,
-  readCache,
-  writeCache,
-  type ScanCache,
-} from "./scan-cache";
+import { exactFolderPathHash } from "./path-identity";
+import { cacheFile, readCache, writeCache, type ScanCache } from "./scan-cache";
 import type { Project, UsageCall } from "./types";
 
 /** Attribution bucket for Chat sessions VS Code stored without a folder. */
@@ -82,7 +78,10 @@ function safePath(value: unknown): value is Path {
   );
 }
 
-function parent(state: unknown, path: Path): Record<string | number, unknown> | undefined {
+function parent(
+  state: unknown,
+  path: Path,
+): Record<string | number, unknown> | undefined {
   let node: unknown = state;
   for (let i = 0; i < path.length - 1; i++) {
     if (!node || typeof node !== "object" || !Object.hasOwn(node, path[i]!))
@@ -115,8 +114,7 @@ export function replayMutationLog(raw: string): ChatSession | undefined {
           state = entry.v;
         continue;
       }
-      if (state === undefined || !safePath(entry.k))
-        continue;
+      if (state === undefined || !safePath(entry.k)) continue;
       const node = parent(state, entry.k);
       if (!node) continue;
       const key = entry.k[entry.k.length - 1]!;
@@ -131,8 +129,7 @@ export function replayMutationLog(raw: string): ChatSession | undefined {
         )
           continue;
         node[key] = entry.v;
-      }
-      else if (entry.kind === 3) node[key] = undefined;
+      } else if (entry.kind === 3) node[key] = undefined;
       else if (entry.kind === 2) {
         if (!Array.isArray(entry.v)) continue;
         const previous = Object.hasOwn(node, key) ? node[key] : undefined;
@@ -141,7 +138,11 @@ export function replayMutationLog(raw: string): ChatSession | undefined {
         if (!Array.isArray(array)) continue;
         const nextLength = entry.i ?? array.length;
         if (entry.i !== undefined) {
-          if (!Number.isSafeInteger(entry.i) || entry.i < 0 || entry.i > array.length)
+          if (
+            !Number.isSafeInteger(entry.i) ||
+            entry.i < 0 ||
+            entry.i > array.length
+          )
             continue;
         }
         if (nextLength + entry.v.length > MAX_ARRAY_ITEMS) continue;
@@ -153,8 +154,19 @@ export function replayMutationLog(raw: string): ChatSession | undefined {
       /* One malformed or out-of-order entry only loses that update. */
     }
   }
-  return state && typeof state === "object" ? (state as ChatSession) : undefined;
+  return state && typeof state === "object"
+    ? (state as ChatSession)
+    : undefined;
 }
+
+// Link request IDs to later model-message IDs without exporting or persisting
+// additional fields on usage calls. The transcript cache stores hashes only.
+const identityAliases = new WeakMap<UsageCall, string[]>();
+const historyId = (identity: string) =>
+  createHash("sha256")
+    .update(`chat-history:${identity}`)
+    .digest("hex")
+    .slice(0, 24);
 
 const count = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0
@@ -214,11 +226,8 @@ export function requestUsage(
       : typeof request.requestId === "string" && request.requestId
         ? `request:${request.requestId}`
         : `time:${projectId}:${sessionId ?? ""}:${timestamp}`;
-  return {
-    id: createHash("sha256")
-      .update(`chat-history:${identity}`)
-      .digest("hex")
-      .slice(0, 24),
+  const call: UsageCall & { dedupeKey: string } = {
+    id: historyId(identity),
     dedupeKey: identity,
     projectId,
     timestamp,
@@ -232,10 +241,14 @@ export function requestUsage(
         ? undefined
         : count(Math.round(credits * 1_000_000_000)),
     requests: rounds && rounds > 0 ? rounds : undefined,
-    durationMs:
-      count(request.elapsedMs) ?? count(result.timings?.totalElapsed),
+    durationMs: count(request.elapsedMs) ?? count(result.timings?.totalElapsed),
     failed: Boolean(result.errorDetails) && errorCode !== "canceled",
   };
+  const aliases = [call.id];
+  if (typeof request.requestId === "string" && request.requestId)
+    aliases.push(historyId(`request:${request.requestId}`));
+  identityAliases.set(call, [...new Set(aliases)]);
+  return call;
 }
 
 type RecoveredCall = UsageCall & { dedupeKey: string };
@@ -257,7 +270,7 @@ interface TranscriptIndex {
   changed: boolean;
 }
 
-const TRANSCRIPT_CACHE_FORMAT = 1;
+const TRANSCRIPT_CACHE_FORMAT = 2;
 
 async function sessionCalls(
   file: string,
@@ -378,7 +391,17 @@ async function loadTranscriptIndex(
       const dedupeKey = (item as { dedupeKey?: unknown } | null)?.dedupeKey;
       if (!call || typeof dedupeKey !== "string" || dedupeKey.length > 2048)
         break;
-      calls.push({ ...call, dedupeKey });
+      const restored = { ...call, dedupeKey };
+      const aliases = (item as { identityAliases?: unknown }).identityAliases;
+      if (
+        !Array.isArray(aliases) ||
+        aliases.some(
+          (alias) => typeof alias !== "string" || !/^[a-f0-9]{24}$/.test(alias),
+        )
+      )
+        break;
+      identityAliases.set(restored, aliases);
+      calls.push(restored);
     }
     // A partly invalid entry is parsed again from the transcript.
     if (calls.length === entry.calls.length)
@@ -408,14 +431,15 @@ function historyProject(
   } catch {
     return undefined;
   }
-  const segments = decodeURIComponent(url.pathname)
-    .split("/")
-    .filter(Boolean);
+  const segments = decodeURIComponent(url.pathname).split("/").filter(Boolean);
   const last = segments[segments.length - 1] ?? "Workspace";
   let pathHashes: string[] | undefined;
+  let exactPathHashes: string[] | undefined;
   if (folder && url.protocol === "file:")
     try {
-      pathHashes = [folderPathHash(fileURLToPath(url))];
+      const path = fileURLToPath(url);
+      pathHashes = [folderPathHash(path)];
+      exactPathHashes = [exactFolderPathHash(path)];
     } catch {
       /* A path that cannot be converted only loses CLI attribution. */
     }
@@ -426,6 +450,7 @@ function historyProject(
     folderCount: workspace ? 0 : 1,
     createdAt: lastUsedAt,
     pathHashes,
+    exactPathHashes,
   };
 }
 
@@ -445,10 +470,40 @@ const label = (value: unknown): string | undefined =>
 export function restoreHistory(raw: unknown, projectId: string): UsageCall[] {
   const list = (raw as { calls?: unknown } | undefined)?.calls;
   if (!Array.isArray(list)) return [];
+  const savedAliases = (raw as { identityAliases?: unknown } | undefined)
+    ?.identityAliases;
   return list.flatMap((item): UsageCall[] => {
     const call = restoreCall(item, projectId);
-    return call ? [call] : [];
+    if (!call) return [];
+    const aliases =
+      savedAliases && typeof savedAliases === "object"
+        ? (savedAliases as Record<string, unknown>)[call.id]
+        : undefined;
+    if (
+      Array.isArray(aliases) &&
+      aliases.every((id) => typeof id === "string" && /^[a-f0-9]{24}$/.test(id))
+    )
+      identityAliases.set(call, [...new Set([call.id, ...aliases])]);
+    return [call];
   });
+}
+
+/** Hashed request/message aliases live beside calls in local storage. They
+ * never become call properties or appear in dashboard and usage exports. */
+export function storedHistoryPayload(calls: UsageCall[]) {
+  return {
+    version: 2,
+    calls: calls.flatMap((call) => {
+      const sanitized = restoreCall(call, call.projectId);
+      return sanitized ? [sanitized] : [];
+    }),
+    identityAliases: Object.fromEntries(
+      calls.flatMap((call) => {
+        const aliases = identityAliases.get(call);
+        return aliases && aliases.length > 1 ? [[call.id, aliases]] : [];
+      }),
+    ),
+  };
 }
 
 function restoreCall(item: unknown, projectId: string): UsageCall | undefined {
@@ -474,19 +529,109 @@ function restoreCall(item: unknown, projectId: string): UsageCall | undefined {
   };
 }
 
-/** Adds newly recovered entries to the stored ones. Returns the merged list
- * and whether anything new was added, so callers only rewrite on change. */
+/** Merges current transcript metadata into stored history. Completed results
+ * can receive token/cost metadata later; retain the latest allowlisted fields
+ * without moving a copied request to a different project or session. */
 export function mergeStoredHistory(
   stored: UsageCall[],
   recovered: UsageCall[],
 ): { calls: UsageCall[]; changed: boolean } {
   const byId = new Map(stored.map((c) => [c.id, c]));
   let changed = false;
-  for (const call of recovered)
-    if (!byId.has(call.id)) {
+  const byAlias = new Map<string, UsageCall>();
+  for (const call of stored)
+    for (const alias of identityAliases.get(call) ?? [call.id])
+      byAlias.set(alias, call);
+  for (const call of recovered) {
+    const aliases = identityAliases.get(call) ?? [call.id];
+    const matches = [
+      ...new Set(
+        aliases.flatMap((id) => {
+          const direct = byId.get(id);
+          const linked = byAlias.get(id);
+          return [direct, linked].filter(
+            (value): value is UsageCall => value !== undefined,
+          );
+        }),
+      ),
+    ].sort((a, b) => a.timestamp - b.timestamp);
+    const previous = matches[0];
+    if (!previous) {
       byId.set(call.id, call);
+      for (const alias of aliases) byAlias.set(alias, call);
+      changed = true;
+      continue;
+    }
+    // Transcript output, credits, duration and model-call rounds grow as a
+    // request completes. Older copied snapshots cannot roll these back.
+    const maximum = (a?: number, b?: number) =>
+      a === undefined ? b : b === undefined ? a : Math.max(a, b);
+    const requests = maximum(previous.requests, call.requests);
+    const stale =
+      (previous.requests !== undefined &&
+        (call.requests === undefined || call.requests < previous.requests)) ||
+      (previous.output !== undefined &&
+        (call.output === undefined || call.output < previous.output));
+    const updated: UsageCall = {
+      ...previous,
+      // Once a message ID arrived, an older request-only copy cannot move
+      // the canonical identity back to its initial request ID.
+      id:
+        aliases.length === 1 && (identityAliases.get(previous)?.length ?? 0) > 1
+          ? previous.id
+          : call.id,
+      model: call.model === "unknown" || stale ? previous.model : call.model,
+      // Prompt size is only the last round's input once tool rounds grow.
+      input:
+        requests !== undefined && requests > 1
+          ? undefined
+          : stale
+            ? previous.input
+            : (call.input ?? previous.input),
+      // A single round's fallback output is not a measured aggregate after
+      // more rounds appear. Older lower-round copies cannot restore it.
+      output:
+        requests !== undefined &&
+        previous.requests !== undefined &&
+        requests > previous.requests &&
+        call.output === undefined
+          ? undefined
+          : previous.requests !== undefined &&
+              (call.requests === undefined || call.requests < previous.requests)
+            ? previous.output
+            : maximum(previous.output, call.output),
+      nanoAiu: maximum(previous.nanoAiu, call.nanoAiu),
+      requests,
+      durationMs: maximum(previous.durationMs, call.durationMs),
+      failed: stale ? previous.failed : call.failed,
+    };
+    const combinedAliases = [
+      ...new Set(
+        matches
+          .flatMap((match) => identityAliases.get(match) ?? [match.id])
+          .concat(aliases),
+      ),
+    ];
+    identityAliases.set(updated, combinedAliases);
+    const previousAliases = identityAliases.get(previous) ?? [previous.id];
+    if (
+      combinedAliases.some((alias) => !previousAliases.includes(alias)) ||
+      updated.id !== previous.id ||
+      matches.length > 1 ||
+      updated.model !== previous.model ||
+      updated.input !== previous.input ||
+      updated.output !== previous.output ||
+      updated.nanoAiu !== previous.nanoAiu ||
+      updated.requests !== previous.requests ||
+      updated.durationMs !== previous.durationMs ||
+      updated.failed !== previous.failed
+    ) {
+      for (const match of matches) byId.delete(match.id);
+      byId.set(updated.id, updated);
+      for (const alias of combinedAliases) byAlias.set(alias, updated);
       changed = true;
     }
+  }
   return {
     calls: [...byId.values()].sort((a, b) => a.timestamp - b.timestamp),
     changed,
@@ -507,13 +652,18 @@ export function withoutLiveOverlap(
     if (Number.isFinite(timestamp) && timestamp < first) first = timestamp;
   if (!Number.isFinite(first)) return imported;
   const day = new Date(first);
-  const cutoff = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
+  const cutoff = new Date(
+    day.getFullYear(),
+    day.getMonth(),
+    day.getDate(),
+  ).getTime();
   return imported.filter((call) => call.timestamp < cutoff);
 }
 
 /** Scans every Chat transcript of this VS Code profile. The earliest copy of
- * a request wins when VS Code duplicated a session (for example after
- * continuing a chat in a new session), so copied requests count once. With a
+ * a request retains attribution when VS Code duplicates a session (for
+ * example after continuing a chat); richer copied metadata is merged into
+ * that request so usage counts once. With a
  * cache, only transcripts that changed since the last scan are parsed. */
 export async function scanChatHistory(
   globalStorageFsPath: string,
@@ -575,15 +725,30 @@ export async function scanChatHistory(
       TRANSCRIPT_CACHE_FORMAT,
       cache.key,
       userDir,
-      { files: Object.fromEntries(index.next) },
+      {
+        files: Object.fromEntries(
+          [...index.next].map(([key, entry]) => [
+            key,
+            {
+              ...entry,
+              calls: entry.calls.map((call) => ({
+                ...call,
+                identityAliases: identityAliases.get(call) ?? [call.id],
+              })),
+            },
+          ]),
+        ),
+      },
     );
   found.sort((a, b) => a.timestamp - b.timestamp);
-  const seen = new Set<string>();
-  const calls: UsageCall[] = [];
-  for (const { dedupeKey, ...call } of found) {
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-    calls.push(call);
+  const recoveredCalls: UsageCall[] = [];
+  for (const recovered of found) {
+    const { dedupeKey, ...call } = recovered;
+    identityAliases.set(call, identityAliases.get(recovered) ?? [call.id]);
+    recoveredCalls.push(call);
   }
+  // Earliest attribution stays fixed, while later copies can complete usage
+  // and link request identities to their subsequently written message IDs.
+  const calls = mergeStoredHistory([], recoveredCalls).calls;
   return { projects: [...projects.values()], calls };
 }

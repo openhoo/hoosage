@@ -2,6 +2,7 @@
 .github/**
 .agents/**
 skills/**
+docs/**
 jetbrains/**
 .hoolicy/**
 .test-work/**

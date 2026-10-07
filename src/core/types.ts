@@ -7,6 +7,9 @@ export interface Project {
   /** sha256 of each normalized, lowercased workspace folder path.
    * Local-only attribution key for Copilot CLI sessions; never exported. */
   pathHashes?: string[];
+  /** Case-preserving local folder hashes. Required for workspace-group
+   * attribution on POSIX; never exported. Legacy pathHashes stay for migration. */
+  exactPathHashes?: string[];
 }
 
 // This allowlist is the entire persisted/exported usage model. No prompts or code.

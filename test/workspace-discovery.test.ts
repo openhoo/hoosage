@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { folderPathHash } from "../src/core/cli";
+import { exactFolderPathHash } from "../src/core/path-identity";
 import {
   discoverKnownFolders,
   placeholderProject,
@@ -48,14 +49,18 @@ test("discovers previously opened local folders from workspaceStorage, skips rem
     await mkdir(join(workspaceStorage, "multiroot"), { recursive: true });
     await writeFile(
       join(workspaceStorage, "multiroot", "workspace.json"),
-      JSON.stringify({ workspace: pathToFileURL(join(root, "x.code-workspace")).toString() }),
+      JSON.stringify({
+        workspace: pathToFileURL(join(root, "x.code-workspace")).toString(),
+      }),
     );
 
     // Remote / dev container folder: must be skipped.
     await mkdir(join(workspaceStorage, "remote"), { recursive: true });
     await writeFile(
       join(workspaceStorage, "remote", "workspace.json"),
-      JSON.stringify({ folder: "vscode-remote://dev-container+abcd/workspaces/app" }),
+      JSON.stringify({
+        folder: "vscode-remote://dev-container+abcd/workspaces/app",
+      }),
     );
     await mkdir(join(workspaceStorage, "network"));
     await writeFile(
@@ -70,6 +75,7 @@ test("discovers previously opened local folders from workspaceStorage, skips rem
     );
     assert.equal(found[0]!.name, "kept-project");
     assert.equal(found[0]!.pathHash, folderPathHash(kept));
+    assert.equal(found[0]!.exactPathHash, exactFolderPathHash(kept));
 
     const before = Date.now();
     const project = placeholderProject(found[0]!);
@@ -78,6 +84,7 @@ test("discovers previously opened local folders from workspaceStorage, skips rem
     assert.equal(project.kind, "folder");
     assert.equal(project.folderCount, 1);
     assert.deepEqual(project.pathHashes, [folderPathHash(kept)]);
+    assert.deepEqual(project.exactPathHashes, [exactFolderPathHash(kept)]);
     assert.ok(project.createdAt >= before && project.createdAt <= after);
     assert.ok(!JSON.stringify(project).includes(root));
   } finally {
@@ -88,7 +95,12 @@ test("discovers previously opened local folders from workspaceStorage, skips rem
 test("returns nothing when workspaceStorage is missing", async () => {
   const root = await mkdtemp(join(tmpdir(), "hoosage-workspaces-"));
   try {
-    const globalStorage = join(root, "User", "globalStorage", "openhoo.hoosage");
+    const globalStorage = join(
+      root,
+      "User",
+      "globalStorage",
+      "openhoo.hoosage",
+    );
     await mkdir(globalStorage, { recursive: true });
     assert.deepEqual(await discoverKnownFolders(globalStorage), []);
   } finally {

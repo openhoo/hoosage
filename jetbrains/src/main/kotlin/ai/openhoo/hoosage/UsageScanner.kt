@@ -118,7 +118,8 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                                     "session.start", "session.resume" -> {
                                         val next = data?.obj("context")?.string("cwd")
                                         if (next != null) {
-                                            if (next != cwd && (sawContext || sawShutdown)) mixedCwd = true
+                                            if (pathKeyOrNull(next) != cwd?.let(::pathKeyOrNull) &&
+                                                (sawContext || sawShutdown)) mixedCwd = true
                                             cwd = next
                                             sawContext = true
                                         }
@@ -184,17 +185,49 @@ class UsageScanner(private val root: Path = defaultRoot()) {
 
 private fun parseWorkspace(text: String): Pair<String?, String?> {
     fun field(name: String): String? {
-        val line = text.lineSequence().firstOrNull { it.trimStart().startsWith("$name:") } ?: return null
-        val raw = line.substringAfter(':').trim()
-        val value = if (raw.firstOrNull() == '"' || raw.firstOrNull() == '\'') {
-            val end = raw.indexOf(raw[0], 1)
-            if (end < 0) return null
-            raw.substring(1, end)
-        } else raw.replace(Regex("\\s+#.*$"), "").trim()
+        // Only top-level scalar metadata is authoritative. Nested and duplicate
+        // fields must not turn another client's session into a JetBrains session.
+        val lines = text.lineSequence().filter { it.startsWith("$name:") }.toList()
+        if (lines.size != 1) return null
+        val raw = lines.single().substringAfter(':').trim()
+        val value = when (raw.firstOrNull()) {
+            '"' -> {
+                // Copilot's quoted path strings use JSON-compatible escaping.
+                var end = 1
+                var escaped = false
+                while (end < raw.length) {
+                    if (raw[end] == '"' && !escaped) break
+                    escaped = raw[end] == '\\' && !escaped
+                    end++
+                }
+                if (end == raw.length || !scalarSuffix(raw.substring(end + 1))) return null
+                try { JsonParser.parseString(raw.substring(0, end + 1)).asString }
+                catch (_: Exception) { return null }
+            }
+            '\'' -> {
+                val value = StringBuilder()
+                var end = 1
+                while (end < raw.length) {
+                    if (raw[end] == '\'') {
+                        if (end + 1 < raw.length && raw[end + 1] == '\'') {
+                            value.append('\''); end += 2; continue
+                        }
+                        break
+                    }
+                    value.append(raw[end++])
+                }
+                if (end == raw.length || !scalarSuffix(raw.substring(end + 1))) return null
+                value.toString()
+            }
+            else -> raw.replace(Regex("\\s+#.*$"), "").trim()
+        }
         return value.takeIf { it.isNotBlank() }
     }
     return field("client_name") to field("cwd")
 }
+
+private fun scalarSuffix(suffix: String): Boolean = suffix.isBlank() ||
+    (suffix.firstOrNull()?.isWhitespace() == true && suffix.trimStart().startsWith('#'))
 
 private fun JsonObject.obj(key: String): JsonObject? = get(key)?.takeIf { it.isJsonObject }?.asJsonObject
 private fun JsonObject.string(key: String): String? = try {

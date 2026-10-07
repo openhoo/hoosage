@@ -858,3 +858,67 @@ test("per-run session counters from older CLIs are summed across resumes", async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("replayed shutdown and checkpoint IDs do not reset cumulative counters", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "replay");
+    const first = totalShutdown("s1", "2026-09-22T10:01:00Z", 100_000_000_000, "gpt-5.4", {
+      "gpt-5.4": priced(1000, 100, 4, 100_000_000_000),
+    });
+    await writeFile(file, [first, checkpoint("c1", "2026-09-22T10:02:00Z", 150_000_000_000), first,
+      totalShutdown("s2", "2026-09-22T10:03:00Z", 200_000_000_000, "gpt-5.4", {
+        "gpt-5.4": priced(2000, 200, 8, 200_000_000_000),
+      }), checkpoint("c1", "2026-09-22T10:02:00Z", 150_000_000_000),
+    ].join("\n") + "\n");
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "p");
+    assert.equal(totals([...scanner.calls.values()]).input, 2000);
+    assert.equal(totals([...scanner.calls.values()]).calls, 8);
+    assert.equal(sessionUsd(scanner), 2);
+    assert.equal(scanner.calls.get("cli:replay:s1:gpt-5.4")!.input, 1000);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("model counters restarting without session cost count the first new run", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "model-reset");
+    await writeFile(file, [
+      shutdown("s1", "2026-09-22T10:01:00Z", { "gpt-5.4": priced(1000, 100, 4, 100_000_000_000) }),
+      shutdown("s2", "2026-09-22T10:02:00Z", { "gpt-5.4": priced(200, 20, 1, 20_000_000_000) }),
+      shutdown("s3", "2026-09-22T10:03:00Z", { "gpt-5.4": priced(500, 50, 3, 50_000_000_000) }),
+    ].join("\n") + "\n");
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "p");
+    assert.equal(totals([...scanner.calls.values()]).input, 1500);
+    assert.equal(totals([...scanner.calls.values()]).output, 150);
+    assert.equal(totals([...scanner.calls.values()]).calls, 7);
+    assert.equal(sessionUsd(scanner), 1.5);
+    assert.equal(scanner.calls.get("cli:model-reset:s2:gpt-5.4")!.input, 200);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("explicit zero model snapshots establish a reset baseline without emitting fake usage", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
+  try {
+    const file = await sessionDir(dir, "zero-reset");
+    await writeFile(file, [
+      shutdown("s1", "2026-09-22T10:01:00Z", { "gpt-5.4": metrics(1000, 100, 0, 0, 4) }),
+      shutdown("s2", "2026-09-22T10:02:00Z", { "gpt-5.4": metrics(0, 0, 0, 0, 0) }),
+      shutdown("s3", "2026-09-22T10:03:00Z", { "gpt-5.4": metrics(2000, 200, 0, 0, 8) }),
+    ].join("\n") + "\n");
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "p");
+    assert.equal(scanner.calls.size, 2);
+    assert.equal(totals([...scanner.calls.values()]).input, 3000);
+    assert.equal(totals([...scanner.calls.values()]).calls, 12);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

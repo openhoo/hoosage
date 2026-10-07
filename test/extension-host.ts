@@ -13,6 +13,10 @@ export async function run() {
   const initial = await api.getSnapshot();
   assert.equal(initial.currentProjectId, process.env.HOOSAGE_TEST_PROJECT_ID);
   assert.equal(initial.status, "off", initial.statusDetail);
+  assert.ok(
+    !JSON.stringify(initial.projects).includes("NEVER_EXPOSE_PROJECT"),
+    "Saved project metadata is allowlisted before reaching dashboard or exports",
+  );
   let discovered = initial;
   for (
     let i = 0;
@@ -54,7 +58,10 @@ export async function run() {
     ),
     "Completed local sessions discover projects without an enable click",
   );
-  assert.equal(initial.calls.filter((call) => call.source !== "chat-history").length, 2);
+  assert.equal(
+    initial.calls.filter((call) => call.source !== "chat-history").length,
+    2,
+  );
   assert.equal(
     initial.calls.find((call) => call.source === "cli")?.projectId,
     process.env.HOOSAGE_TEST_AUTO_PROJECT_ID,
@@ -67,20 +74,27 @@ export async function run() {
   let imported = initial;
   for (
     let i = 0;
-    i < 100 && !imported.calls.some((call) => call.model === "historical-model");
+    i < 100 &&
+    !imported.calls.some((call) => call.model === "historical-model");
     i++
   ) {
     await new Promise((r) => setTimeout(r, 50));
     imported = await api.getSnapshot();
   }
-  const historicalCall = imported.calls.find((call) => call.model === "historical-model");
-  assert.ok(historicalCall, "Historical Chat usage appears without delaying activation");
+  const historicalCall = imported.calls.find(
+    (call) => call.model === "historical-model",
+  );
+  assert.ok(
+    historicalCall,
+    "Historical Chat usage appears without delaying activation",
+  );
   assert.equal(historicalCall.input, 123);
   assert.equal(historicalCall.output, 45);
   assert.equal(historicalCall.nanoAiu, 2_000_000_000);
   assert.ok(
-    !(await readFile(process.env.HOOSAGE_TEST_IMPORTED_HISTORY!, "utf8"))
-      .includes("NEVER_PERSIST_HISTORY_PROMPT"),
+    !(
+      await readFile(process.env.HOOSAGE_TEST_IMPORTED_HISTORY!, "utf8")
+    ).includes("NEVER_PERSIST_HISTORY_PROMPT"),
     "Only usage metadata may be persisted",
   );
   assert.equal(
@@ -185,7 +199,9 @@ export async function run() {
   const diagnostics = (await api.getDiagnostics()).join("\n");
   assert.ok(diagnostics.includes("Extension host: Local extension host"));
   assert.ok(
-    diagnostics.includes(`Current project ID: ${process.env.HOOSAGE_TEST_PROJECT_ID}`),
+    diagnostics.includes(
+      `Current project ID: ${process.env.HOOSAGE_TEST_PROJECT_ID}`,
+    ),
   );
   assert.ok(diagnostics.includes("Current project name: sample-project"));
   assert.match(diagnostics, /Extension storage fingerprint: [a-f0-9]{24}/);
@@ -200,7 +216,9 @@ export async function run() {
     diagnostics.includes("Saved Chat history complete lines processed here: 3"),
   );
   assert.ok(
-    diagnostics.includes("Saved Chat history lines ignored as non-Chat here: 0"),
+    diagnostics.includes(
+      "Saved Chat history lines ignored as non-Chat here: 0",
+    ),
   );
   assert.ok(diagnostics.includes("Chat history scan complete here: yes"));
   assert.ok(diagnostics.includes("Local CLI session scan complete here: yes"));

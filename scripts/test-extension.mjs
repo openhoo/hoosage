@@ -100,6 +100,8 @@ await writeFile(
     kind: "folder",
     folderCount: 1,
     createdAt: 1_700_000_000_000,
+    repositoryUrl: "NEVER_EXPOSE_PROJECT_URL",
+    prompt: "NEVER_EXPOSE_PROJECT_PROMPT",
   }),
 );
 await writeFile(

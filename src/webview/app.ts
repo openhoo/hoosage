@@ -57,7 +57,12 @@ let real: Snapshot | undefined;
 let data: Snapshot | undefined;
 let expandedSession: string | undefined;
 let visibleSessions = 100;
-let toast = "";
+const toastRegion = document.createElement("div");
+toastRegion.className = "toast";
+toastRegion.setAttribute("role", "status");
+toastRegion.setAttribute("aria-live", "polite");
+toastRegion.setAttribute("aria-atomic", "true");
+root.after(toastRegion);
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 let calendarOpen = false;
@@ -138,12 +143,10 @@ function send(type: string, extra: Record<string, unknown> = {}) {
   api?.postMessage({ type, ...extra });
 }
 function announce(message: string) {
-  toast = message;
-  render();
+  toastRegion.textContent = message;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
-    toast = "";
-    render();
+    toastRegion.textContent = "";
   }, 3500);
 }
 function selectedCalls() {
@@ -197,15 +200,16 @@ function calendarPicker(today: string) {
     const selected = key === draftStartDate || key === draftEndDate;
     const inRange = key >= draftStartDate && key <= draftEndDate;
     const label = `${dateLabel(key)}${key === today ? ", today" : ""}${key === draftStartDate ? ", range start" : ""}${key === draftEndDate ? ", range end" : ""}`;
-    return `<button type="button" class="calendar-day${otherMonth ? " other-month" : ""}${inRange ? " in-range" : ""}${selected ? " range-edge" : ""}${key === today ? " is-today" : ""}" data-calendar-day="${key}" data-focus="calendar-day-${key}" tabindex="${key === calendarFocusDate ? 0 : -1}" aria-label="${h(label)}" ${key === today ? 'aria-current="date"' : ""} ${key > today ? "disabled" : ""}>${day.getDate()}</button>`;
+    return `<button type="button" class="calendar-day${otherMonth ? " other-month" : ""}${inRange ? " in-range" : ""}${selected ? " range-edge" : ""}${key === today ? " is-today" : ""}" data-calendar-day="${key}" data-focus="calendar-day-${key}" tabindex="${key === calendarFocusDate ? 0 : -1}" aria-label="${h(label)}" aria-pressed="${selected}" ${key === today ? 'aria-current="date"' : ""} ${key > today ? "disabled" : ""}>${day.getDate()}</button>`;
   }).join("");
   const canAdvance = calendarMonth.slice(0, 7) < today.slice(0, 7);
   const nextYear = localDateKey(new Date(year! + 1, month! - 1, 1).getTime());
   const canAdvanceYear = nextYear.slice(0, 7) <= today.slice(0, 7);
-  return `<div class="calendar-popover" id="date-range-picker" role="dialog" aria-label="Choose date range">
+  return `<div class="calendar-popover" id="date-range-picker" role="dialog" aria-label="Choose date range" aria-describedby="calendar-instructions">
+    <p id="calendar-instructions" class="sr-only">Use arrow keys to move by day or week, Home and End to move within a week, and Page Up or Page Down to change month. Hold Shift to change year. Press Enter to choose a date or Escape to cancel.</p>
     <div class="calendar-top"><div><span class="calendar-eyebrow">EXPLORE USAGE</span><h2>Choose a date range</h2></div><button type="button" class="calendar-close" data-calendar-action="cancel" aria-label="Close calendar">×</button></div>
     <div class="calendar-boundaries" role="group" aria-label="Range boundaries"><button type="button" class="calendar-boundary${activeBoundary === "start" ? " active" : ""}" data-calendar-boundary="start" data-focus="calendar-start" aria-pressed="${activeBoundary === "start"}"><span>FROM</span><strong>${h(dateLabel(draftStartDate))}</strong></button><span class="calendar-boundary-arrow" aria-hidden="true">→</span><button type="button" class="calendar-boundary${activeBoundary === "end" ? " active" : ""}" data-calendar-boundary="end" data-focus="calendar-end" aria-pressed="${activeBoundary === "end"}"><span>TO</span><strong>${h(dateLabel(draftEndDate))}</strong></button></div>
-    <div class="calendar-month-bar"><div class="calendar-month-nav"><button type="button" data-calendar-nav="-12" data-focus="calendar-prev-year" aria-label="Previous year" title="Previous year">«</button><button type="button" data-calendar-nav="-1" data-focus="calendar-prev-month" aria-label="Previous month" title="Previous month">‹</button></div><h3 id="calendar-month-title">${h(monthTitle)}</h3><div class="calendar-month-nav"><button type="button" data-calendar-nav="1" data-focus="calendar-next-month" aria-label="Next month" title="Next month" ${canAdvance ? "" : "disabled"}>›</button><button type="button" data-calendar-nav="12" data-focus="calendar-next-year" aria-label="Next year" title="Next year" ${canAdvanceYear ? "" : "disabled"}>»</button></div></div>
+    <div class="calendar-month-bar"><div class="calendar-month-nav"><button type="button" data-calendar-nav="-12" data-focus="calendar-prev-year" aria-label="Previous year" title="Previous year">«</button><button type="button" data-calendar-nav="-1" data-focus="calendar-prev-month" aria-label="Previous month" title="Previous month">‹</button></div><h3 id="calendar-month-title" aria-live="polite" aria-atomic="true">${h(monthTitle)}</h3><div class="calendar-month-nav"><button type="button" data-calendar-nav="1" data-focus="calendar-next-month" aria-label="Next month" title="Next month" ${canAdvance ? "" : "disabled"}>›</button><button type="button" data-calendar-nav="12" data-focus="calendar-next-year" aria-label="Next year" title="Next year" ${canAdvanceYear ? "" : "disabled"}>»</button></div></div>
     <div class="calendar-weekdays" aria-hidden="true">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => `<span>${day}</span>`).join("")}</div>
     <div class="calendar-grid" role="group" aria-labelledby="calendar-month-title">${daysGrid}</div>
     <div class="calendar-bottom"><div><span class="calendar-selection-label">${draftMode === "custom" ? "CUSTOM RANGE" : `${days}-DAY PRESET`}</span><strong>${h(rangeLabel(draftStartDate, draftEndDate))}</strong></div><button type="button" class="calendar-today" data-calendar-action="today">Today</button></div>
@@ -243,21 +247,39 @@ function render() {
       ["overview", "Overview"],
       ["projects", "Projects"],
       ["activity", "Activity"],
+      ["about", "Usage details"],
     ]
       .map(
         ([key, label]) =>
-          `<button data-focus="nav-${key}" data-page="${key}" class="nav-item ${page === key ? "selected" : ""}" ${page === key ? 'aria-current="page"' : ""}>${icon(key!)}${label}${key === "projects" ? `<span class="nav-count">${data!.projects.length}</span>` : ""}</button>`,
+          `<button data-focus="nav-${key}" data-page="${key}" class="nav-item ${page === key ? "selected" : ""}" aria-label="${label}" title="${label}" ${page === key ? 'aria-current="page"' : ""}>${icon(key!)}${label}${key === "projects" ? `<span class="nav-count">${data!.projects.length}</span>` : ""}</button>`,
       )
       .join("")}</nav>
     </aside>
     <div class="workspace">
     <main>${demo ? `<div class="demo-banner"><span><strong>Preview</strong> · Sample data</span><button data-action="exitDemo">Exit preview ${icon("arrow")}</button></div>` : ""}
-    <div class="page-heading"><div><h1>${{ overview: "Copilot usage", projects: "Projects", activity: "Activity", about: "Usage details" }[page]}</h1></div><div class="heading-actions"><button class="icon-button expand-button" data-action="open" title="Open full dashboard" aria-label="Open full dashboard">${icon("expand")}</button><button class="icon-button" data-action="refresh" data-focus="refresh" title="Refresh usage" aria-label="Refresh usage">${icon("refresh")}</button></div></div>
+    <div class="page-heading"><div><h1 tabindex="-1" data-focus="page-heading">${{ overview: "Copilot usage", projects: "Projects", activity: "Activity", about: "Usage details" }[page]}</h1></div><div class="heading-actions"><button class="icon-button expand-button" data-action="open" title="Open full dashboard" aria-label="Open full dashboard">${icon("expand")}</button><button class="icon-button" data-action="refresh" data-focus="refresh" title="Refresh usage" aria-label="Refresh usage">${icon("refresh")}</button></div></div>
     ${page !== "about" ? `<div class="toolbar">${page === "projects" ? '<span class="toolbar-title">All projects</span>' : `<label class="project-picker">${icon("projects")}<span class="sr-only">Project</span><select id="project" data-focus="project" aria-label="Project"><option value="all">All projects</option>${data.projects.map((p) => `<option value="${h(p.id)}" ${projectId === p.id ? "selected" : ""}>${h(p.name)}</option>`).join("")}</select></label>`}<div class="toolbar-right">${dateControls(today)}<button class="button export" data-action="export" data-focus="export">${icon("download")}Export</button></div></div>` : ""}
     ${data.errors.map((error) => `<div class="notice" role="status">${icon("about")}${h(error)}</div>`).join("")}
     ${!demo && data.indexing && page !== "about" ? `<section class="onboarding" aria-busy="true">${icon("activity")}<span class="section-eyebrow">LOCAL USAGE</span><h2>Indexing saved usage…</h2><p>Reading hoosage's saved project records and local sessions. Totals will appear when the scan is complete.</p></section>` : page === "about" ? about() : page === "projects" ? projects(calls) : page === "activity" ? activity(calls) : overview(calls)}
 
-    </main></div><div class="toast" role="status" aria-live="polite">${h(toast)}</div>`;
+    </main></div>`;
+  // Give every control a stable identity so incoming snapshots preserve keyboard focus.
+  const identities = new Map<string, number>();
+  for (const control of root.querySelectorAll<HTMLElement>(
+    "button, a, select",
+  )) {
+    if (control.dataset.focus) continue;
+    const identity =
+      control.dataset.action ??
+      control.dataset.page ??
+      control.dataset.project ??
+      control.getAttribute("href") ??
+      control.textContent ??
+      "control";
+    const occurrence = identities.get(identity) ?? 0;
+    identities.set(identity, occurrence + 1);
+    control.dataset.focus = `control-${identity}-${occurrence}`;
+  }
   if (focusKey)
     root
       .querySelector<HTMLElement>(`[data-focus="${CSS.escape(focusKey)}"]`)
@@ -304,10 +326,10 @@ function chart(calls: UsageCall[]) {
       const input = (p.input / maximum) * 154;
       const output = (p.output / maximum) * 154;
       const period = rangeLabel(localDateKey(p.start), localDateKey(p.end));
-      return `<g class="chart-bar" tabindex="0" role="img" aria-label="${h(period)}: ${number(p.input)} input, ${number(p.output)} output tokens${p.missingUsage ? "; incomplete token data" : ""}"><title>${h(period)} · ${number(p.tokens)} observed tokens · ${callCount(p)}</title><rect x="${x}" y="${182 - input}" width="${width}" height="${input}" rx="2" class="bar-input"/><rect x="${x}" y="${182 - input - output}" width="${width}" height="${output}" rx="2" class="bar-output"/>${i === 0 || i === points.length - 1 || i % Math.ceil(points.length / 5) === 0 ? `<text x="${x + width / 2}" y="209" text-anchor="middle">${h(dateLabel(localDateKey(p.start), false))}</text>` : ""}</g>`;
+      return `<g class="chart-bar" data-focus="chart-${localDateKey(p.start)}" tabindex="0" role="img" aria-label="${h(period)}: ${p.missingUsage ? "at least " : ""}${number(p.input)} observed input, ${p.missingUsage ? "at least " : ""}${number(p.output)} observed output tokens${p.missingUsage ? "; incomplete token data" : ""}"><title>${h(period)} · ${number(p.tokens)} observed tokens · ${callCount(p)}</title><rect x="${x}" y="${182 - input}" width="${width}" height="${input}" rx="2" class="bar-input"/><rect x="${x}" y="${182 - input - output}" width="${width}" height="${output}" rx="2" class="bar-output"/>${i === 0 || i === points.length - 1 || i % Math.ceil(points.length / 5) === 0 ? `<text x="${x + width / 2}" y="209" text-anchor="middle">${h(dateLabel(localDateKey(p.start), false))}</text>` : ""}</g>`;
     })
     .join("");
-  return `<div class="chart-wrap"><svg class="chart" viewBox="0 0 720 220" role="img" aria-label="Input and output tokens from ${h(localDateKey(bounds.start))} to ${h(localDateKey(bounds.end))}, grouped in ${interval}-day intervals"><text x="0" y="31">${maxLabel}</text><text x="0" y="108">${compact(maximum / 2)}</text><text x="20" y="186">0</text><path d="M48 28H710 M48 105H710 M48 182H710" class="gridline"/>${bars}</svg></div><p class="chart-interval">${interval === 1 ? "Daily" : `${interval}-day`} intervals · ${bounds.days} ${bounds.days === 1 ? "day" : "days"} selected</p>${!calls.length ? '<p class="chart-empty">No calls in this period.</p>' : ""}`;
+  return `<div class="chart-wrap"><svg class="chart" viewBox="0 0 720 220" role="group" aria-label="Input and output tokens from ${h(localDateKey(bounds.start))} to ${h(localDateKey(bounds.end))}, grouped in ${interval}-day intervals"><text x="0" y="31">${maxLabel}</text><text x="0" y="108">${compact(maximum / 2)}</text><text x="20" y="186">0</text><path d="M48 28H710 M48 105H710 M48 182H710" class="gridline"/>${bars}</svg></div><p class="chart-interval">${interval === 1 ? "Daily" : `${interval}-day`} intervals · ${bounds.days} ${bounds.days === 1 ? "day" : "days"} selected</p>${!calls.length ? '<p class="chart-empty">No calls in this period.</p>' : ""}`;
 }
 
 function modelMix(calls: UsageCall[]) {
@@ -595,6 +617,7 @@ root.addEventListener("click", (event) => {
   }
   if (button.dataset.page) {
     page = button.dataset.page;
+    calendarOpen = false;
     expandedSession = undefined;
     save();
     render();
@@ -641,6 +664,9 @@ root.addEventListener("click", (event) => {
     visibleSessions = 100;
     save();
     render();
+    root
+      .querySelector<HTMLElement>('[data-focus="page-heading"]')
+      ?.focus({ preventScroll: true });
     window.scrollTo({ top: 0 });
     return;
   }
@@ -695,10 +721,10 @@ root.addEventListener("click", (event) => {
     send("refresh");
     announce("Refreshing…");
     clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(
-      () => announce("No response from VS Code. Reopen the dashboard."),
-      10000,
-    );
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      announce("No response from VS Code. Reopen the dashboard.");
+    }, 10000);
     return;
   }
   if (demo && action !== "open") {
@@ -721,6 +747,7 @@ root.addEventListener("keydown", (event) => {
   const target = event.target as HTMLElement;
   if (event.key === "Escape") {
     event.preventDefault();
+    event.stopPropagation();
     closeCalendar();
     return;
   }
@@ -781,11 +808,14 @@ root.addEventListener("focusout", (event) => {
 });
 window.addEventListener("message", (event) => {
   if (event.data?.type === "snapshot") {
+    const refreshing = refreshTimer !== undefined;
     clearTimeout(refreshTimer);
+    refreshTimer = undefined;
     real = event.data.snapshot as Snapshot;
     if (!demo) {
       data = real;
       render();
+      if (refreshing) announce("Usage refreshed.");
     }
   }
 });
