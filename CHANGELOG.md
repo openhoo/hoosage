@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.1 (2026-10-07)
+
+### Bug Fixes
+
+- **hoosage:** repair usage accounting and polish editor dashboards (#56) (d83c3e7)
+
+### Other Changes
+
+- **hoosage:** make extension host tests pass on Windows (#54) (d83f301)
+- **hoosage:** add contributor and user agent skills (#55) (b5dac04)
+
 ## 0.14.0 (2026-09-29)
 
 ### Features
