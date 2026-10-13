@@ -116,10 +116,12 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                                 val data = event.obj("data")
                                 when (event.string("type")) {
                                     "session.start", "session.resume" -> {
-                                        val next = data?.obj("context")?.string("cwd")
-                                        if (next != null) {
-                                            if (pathKeyOrNull(next) != cwd?.let(::pathKeyOrNull) &&
-                                                (sawContext || sawShutdown)) mixedCwd = true
+                                        val context = data?.obj("context")
+                                        if (context?.has("cwd") == true) {
+                                            val next = context.string("cwd")
+                                            val nextKey = next?.let(::pathKeyOrNull)
+                                            if (nextKey == null || (nextKey != cwd?.let(::pathKeyOrNull) &&
+                                                (sawContext || sawShutdown))) mixedCwd = true
                                             cwd = next
                                             sawContext = true
                                         }
@@ -136,11 +138,16 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                                         val ambiguous = mixedCwd
                                         for ((model, raw) in metrics.entrySet()) {
                                             if (model.isBlank() || !raw.isJsonObject) continue
-                                            val current = counters(raw.asJsonObject)
+                                            val current = counters(raw.asJsonObject).validCacheSubsets()
                                             if (current == Counters(null, null, null, null, null, null)) continue
-                                            val key = "${event.string("id") ?: ordinal}:$model"
+                                            val key = "${event.eventId() ?: ordinal}:$model"
                                             if (!seen.add(key)) continue
-                                            val previous = baselines[model]
+                                            var previous = baselines[model]
+                                            // Copilot can restart model counters on compaction/resume.
+                                            // A cost decrease alone does not establish a new run.
+                                            if (decreased(current.requests, previous?.requests) ||
+                                                (decreased(current.input, previous?.input) &&
+                                                    decreased(current.output, previous?.output))) previous = null
                                             val delta = Counters(
                                                 difference(current.requests, previous?.requests, previous != null),
                                                 difference(current.input, previous?.input, previous != null),
@@ -148,8 +155,17 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                                                 difference(current.cacheRead, previous?.cacheRead, previous != null),
                                                 difference(current.cacheWrite, previous?.cacheWrite, previous != null),
                                                 difference(current.nanoAiu, previous?.nanoAiu, previous != null),
+                                            ).validCacheSubsets()
+                                            baselines[model] = Counters(
+                                                retainCount(current.requests, previous?.requests),
+                                                retainCount(current.input, previous?.input),
+                                                retainCount(current.output, previous?.output),
+                                                retainCount(current.cacheRead, previous?.cacheRead),
+                                                retainCount(current.cacheWrite, previous?.cacheWrite),
+                                                // A missing cost breaks coverage; do not later turn its
+                                                // cumulative value into a measured interval cost.
+                                                current.nanoAiu?.let { retainCount(it, previous?.nanoAiu) },
                                             )
-                                            baselines[model] = current
                                             if (ambiguous || cwd?.let { pathKeyOrNull(it) } != projectKey) continue
                                             if (!hasUsage(delta)) continue
                                             if (entries.size + sessionEntries.size >= MAX_ENTRIES) {
@@ -183,47 +199,60 @@ class UsageScanner(private val root: Path = defaultRoot()) {
     }
 }
 
-private fun parseWorkspace(text: String): Pair<String?, String?> {
-    fun field(name: String): String? {
-        // Only top-level scalar metadata is authoritative. Nested and duplicate
-        // fields must not turn another client's session into a JetBrains session.
-        val lines = text.lineSequence().filter { it.startsWith("$name:") }.toList()
-        if (lines.size != 1) return null
-        val raw = lines.single().substringAfter(':').trim()
-        val value = when (raw.firstOrNull()) {
-            '"' -> {
-                // Copilot's quoted path strings use JSON-compatible escaping.
-                var end = 1
-                var escaped = false
-                while (end < raw.length) {
-                    if (raw[end] == '"' && !escaped) break
-                    escaped = raw[end] == '\\' && !escaped
-                    end++
-                }
-                if (end == raw.length || !scalarSuffix(raw.substring(end + 1))) return null
-                try { JsonParser.parseString(raw.substring(0, end + 1)).asString }
-                catch (_: Exception) { return null }
-            }
-            '\'' -> {
-                val value = StringBuilder()
-                var end = 1
-                while (end < raw.length) {
-                    if (raw[end] == '\'') {
-                        if (end + 1 < raw.length && raw[end + 1] == '\'') {
-                            value.append('\''); end += 2; continue
-                        }
-                        break
-                    }
-                    value.append(raw[end++])
-                }
-                if (end == raw.length || !scalarSuffix(raw.substring(end + 1))) return null
-                value.toString()
-            }
-            else -> raw.replace(Regex("\\s+#.*$"), "").trim()
-        }
-        return value.takeIf { it.isNotBlank() }
+private fun parseWorkspace(text: String): Pair<String?, String?>? {
+    // Parse only the single-document scalar subset that Copilot writes. Decode
+    // top-level keys before checking duplicates, so quoted/escaped keys and
+    // whitespace before ':' cannot hide conflicting attribution metadata.
+    val fields = HashMap<String, String>()
+    val mapping = Regex("""^("(?:\\.|[^"\\])*"|'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_-]*)\s*:(.*)$""")
+    for (line in text.removePrefix("\uFEFF").lineSequence()) {
+        if (line.isBlank() || line.trimStart().startsWith('#') || line.first().isWhitespace()) continue
+        val match = mapping.matchEntire(line) ?: return null
+        val key = scalar(match.groupValues[1]) ?: return null
+        if (key == "<<") return null
+        if (key !in setOf("client_name", "cwd")) continue
+        if (fields.containsKey(key)) return null
+        fields[key] = scalar(match.groupValues[2].trim()) ?: return null
     }
-    return field("client_name") to field("cwd")
+    return (fields["client_name"] ?: return null) to fields["cwd"]
+}
+
+private fun scalar(raw: String): String? {
+    val value = when (raw.firstOrNull()) {
+        '"' -> {
+            // Copilot's quoted path strings use JSON-compatible escaping.
+            var end = 1
+            var escaped = false
+            while (end < raw.length) {
+                if (raw[end] == '"' && !escaped) break
+                escaped = raw[end] == '\\' && !escaped
+                end++
+            }
+            if (end == raw.length || !scalarSuffix(raw.substring(end + 1))) return null
+            try { JsonParser.parseString(raw.substring(0, end + 1)).asString }
+            catch (_: Exception) { return null }
+        }
+        '\'' -> {
+            val value = StringBuilder()
+            var end = 1
+            while (end < raw.length) {
+                if (raw[end] == '\'') {
+                    if (end + 1 < raw.length && raw[end + 1] == '\'') {
+                        value.append('\''); end += 2; continue
+                    }
+                    break
+                }
+                value.append(raw[end++])
+            }
+            if (end == raw.length || !scalarSuffix(raw.substring(end + 1))) return null
+            value.toString()
+        }
+        else -> raw.replace(Regex("\\s+#.*$"), "").trim().takeIf {
+            it.firstOrNull() !in listOf('&', '*', '[', '{', '|', '>') &&
+                !Regex(":(?:\\s|$)").containsMatchIn(it)
+        } ?: return null
+    }
+    return value.takeIf { it.isNotBlank() }
 }
 
 private fun scalarSuffix(suffix: String): Boolean = suffix.isBlank() ||
@@ -233,6 +262,10 @@ private fun JsonObject.obj(key: String): JsonObject? = get(key)?.takeIf { it.isJ
 private fun JsonObject.string(key: String): String? = try {
     get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
 } catch (_: Exception) { null }
+private fun JsonObject.eventId(): String? = string("id")?.takeIf { it.isNotBlank() }
+    ?: get("id")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.let {
+        runCatching { it.asBigDecimal.stripTrailingZeros().toPlainString() }.getOrNull()
+    }
 private fun JsonObject.count(key: String): Long? = try {
     get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
         ?.asJsonPrimitive?.asBigDecimal?.toBigIntegerExact()?.longValueExact()
@@ -243,6 +276,21 @@ private fun counters(entry: JsonObject): Counters {
     return Counters(entry.obj("requests")?.count("count"), usage?.count("inputTokens"),
         usage?.count("outputTokens"), usage?.count("cacheReadTokens"),
         usage?.count("cacheWriteTokens"), entry.count("totalNanoAiu"))
+}
+private fun decreased(current: Long?, previous: Long?): Boolean =
+    current != null && previous != null && current < previous
+private fun Counters.validCacheSubsets(): Counters {
+    val measuredInput = input ?: return this
+    val read = cacheRead?.takeIf { it <= measuredInput }
+    val write = cacheWrite?.takeIf { it <= measuredInput }
+    return if (read != null && write != null && write > measuredInput - read)
+        copy(cacheRead = null, cacheWrite = null)
+    else copy(cacheRead = read, cacheWrite = write)
+}
+private fun retainCount(current: Long?, previous: Long?): Long? = when {
+    current == null -> previous
+    previous == null -> current
+    else -> maxOf(current, previous)
 }
 private fun difference(current: Long?, previous: Long?, hadSnapshot: Boolean): Long? = when {
     current == null -> null

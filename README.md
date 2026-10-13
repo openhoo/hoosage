@@ -114,6 +114,10 @@ The extension does **not** report your invoice, remaining monthly allowance, pre
 
 The dashboard offers 7, 14 and 30-day presets plus a **Custom** from/to range. Open the date-range picker to choose the start and end on a calendar; its month and year controls can jump to older history. The previous/next buttons move the whole selected period, stopping at today. The calendar supports arrow keys, Home/End, Page Up/Down (hold Shift to jump a year), Enter and Escape. Long ranges are grouped into legible chart intervals without changing totals. The project list always shows all projects for the selected period. CSV export uses the same period and project selection as the page. Chat calls are assigned to their start date; CLI tokens and request counts are assigned to their shutdown date, and CLI cost to the usage checkpoint or shutdown that reported it. Chat usage updates after Copilot exports completed spans; CLI cost appears with the CLI's periodic usage checkpoints (including still-running sessions), tokens and request counts after session shutdown. hoosage polls local history every five seconds.
 
+Export becomes available once indexing, including earlier Chat recovery, has
+finished and any source read errors have been resolved. Both the dashboard and
+Command Palette explain when an incomplete snapshot cannot be exported.
+
 ## Costs in US dollars
 
 When a chat span includes `copilot_chat.copilot_usage_nano_aiu`, hoosage uses that reported per-request value. Nano-AIU / 1,000,000,000 gives AI credits; one AI credit is $0.01. An explicit reported zero is preserved. Session-wide cost attributes are never added to per-request costs.
@@ -121,6 +125,14 @@ When a chat span includes `copilot_chat.copilot_usage_nano_aiu`, hoosage uses th
 For Copilot CLI and JetBrains sessions, hoosage uses the reported session-wide cumulative `totalNanoAiu` from usage checkpoints and shutdowns when present. The CLI's per-model `modelMetrics` restart after context compaction or an interrupted run and leave out sub-agent calls, so cost they do not cover is added to the session's current model; per-model tokens and request counts still come from `modelMetrics`. Older sessions without the session total fall back to the per-model `totalNanoAiu` increment when consecutive cumulative snapshots permit a reliable difference. Otherwise, **≈** marks an estimate using the [GitHub Copilot model price table](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing), checked **2026-09-23**. The bundled table includes cache-read/write rates and long-context tiers. Cache reads and writes are subsets of OTel input tokens: `(input − reads − writes) × input rate + reads × cache rate + writes × write rate + output × output rate`, divided by one million.
 
 Missing cache details are assumed zero and flagged in cost details. Unknown models, incomplete token counts and inconsistent cache counts remain unpriced. A CLI session aggregate also stays unpriced when its total could cross a per-request long-context threshold. **—** means no amount is available; **+** marks a subtotal that excludes unpriced usage. Expired promotional rates are not used for later calls. Historical calls without reported cost are estimated at the snapshot rates, not historical prices.
+
+When a CLI session total first becomes available, earlier reliable model costs
+are reconciled with it. Earlier token intervals without their own measured cost
+show **Included** when that total covers them; their individual cost stays
+unknown, and another token estimate is not added. JSON records carry
+`costIncludedInSessionTotal: true`; CSV cost provenance and details explain this
+coverage. Checkpoint and model snapshots can alternate without counting the same
+reported usage twice.
 
 USD represents usage value. Subscription fees, included allowances, discounts, taxes and additional charges are not calculated. Prices are bundled with the extension; no pricing service is contacted. The CSV carries the amount, source, assumption or exclusion reason, and estimate table date.
 

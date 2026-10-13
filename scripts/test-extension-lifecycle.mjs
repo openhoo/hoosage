@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
@@ -29,19 +29,34 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function harness({ blockScan = false, blockCollector = false } = {}) {
+async function harness({
+  blockScan = false,
+  blockCollector = false,
+  blockHistory = false,
+  blockDiscovery = false,
+  withWorkspace = false,
+  seedTailerCall = false,
+  failTailer = false,
+} = {}) {
   const directory = await mkdtemp(join(tmpdir(), "hoosage-lifecycle-"));
   const scanEntered = deferred();
   const scanRelease = deferred();
   const collectorEntered = deferred();
   const collectorRelease = deferred();
+  const historyEntered = deferred();
+  const historyRelease = deferred();
+  const discoveryEntered = deferred();
+  const discoveryRelease = deferred();
   const counters = {
     scans: 0,
     collectorStarts: 0,
     collectorCloses: 0,
     timersAfterDispose: 0,
     uiAfterDispose: 0,
+    saveDialogs: 0,
+    informationMessages: 0,
   };
+  const commands = new Map();
   let disposed = false;
   const token = "a".repeat(48);
   const endpoint = `http://127.0.0.1:54321/${token}`;
@@ -69,7 +84,7 @@ async function harness({ blockScan = false, blockCollector = false } = {}) {
   const vscode = {
     workspace: {
       isTrusted: true,
-      workspaceFolders: blockCollector ? [folder] : [],
+      workspaceFolders: blockCollector || withWorkspace ? [folder] : [],
       getConfiguration: () => ({
         get: (key) => settings[key],
         inspect: () => ({ defaultValue: "" }),
@@ -85,9 +100,23 @@ async function harness({ blockScan = false, blockCollector = false } = {}) {
         dispose: noop,
       }),
       registerWebviewViewProvider: disposable,
+      showSaveDialog: async () => {
+        counters.saveDialogs++;
+        return undefined;
+      },
+      showInformationMessage: async () => {
+        counters.informationMessages++;
+        return undefined;
+      },
     },
-    commands: { registerCommand: disposable },
+    commands: {
+      registerCommand: (name, handler) => {
+        commands.set(name, handler);
+        return disposable();
+      },
+    },
     StatusBarAlignment: { Right: 1 },
+    Uri: { file: (path) => path },
   };
   const mocks = {
     "./core/tailer": {
@@ -95,7 +124,19 @@ async function harness({ blockScan = false, blockCollector = false } = {}) {
         caughtUp = true;
         calls = new Map();
         skippedLines = 0;
-        async poll() {}
+        constructor(_file, projectId) {
+          if (seedTailerCall)
+            this.calls.set("synthetic-live", {
+              id: "synthetic-live",
+              projectId,
+              timestamp: 1_750_000_000_000,
+              model: "synthetic",
+              failed: false,
+            });
+        }
+        async poll() {
+          if (failTailer) throw new Error("Synthetic source read failure");
+        }
       },
     },
     "./core/cli": {
@@ -131,9 +172,22 @@ async function harness({ blockScan = false, blockCollector = false } = {}) {
       },
     },
     "./core/project-metadata": { restoreProject: (value) => value },
-    "./core/workspace-discovery": { discoverKnownFolders: async () => [] },
+    "./core/workspace-discovery": {
+      discoverKnownFolders: async () => {
+        discoveryEntered.resolve();
+        if (blockDiscovery) await discoveryRelease.promise;
+        return blockDiscovery ? [{ id: "d".repeat(24) }] : [];
+      },
+    },
     "./core/chat-history-import": {
-      scanChatHistory: async () => ({ projects: [], calls: [] }),
+      scanChatHistory: async () => {
+        historyEntered.resolve();
+        if (blockHistory) await historyRelease.promise;
+        return {
+          projects: blockHistory ? [{ id: "e".repeat(24) }] : [],
+          calls: [],
+        };
+      },
       restoreHistory: () => [],
       storedHistoryPayload: (calls) => ({ version: 1, calls }),
       mergeStoredHistory: () => ({ changed: false, calls: [] }),
@@ -158,6 +212,10 @@ async function harness({ blockScan = false, blockCollector = false } = {}) {
     "./core/analytics": {
       filterCalls: () => [],
       totals: () => ({ tokens: 0, calls: 0, missingUsage: 0 }),
+      periodEnd: (now) => now,
+      startOfRange: () => 0,
+      filterCallsBetween: () => [],
+      localDateKey: () => "2026-10-13",
     },
     "./core/pricing": {
       costs: () => ({}),
@@ -201,6 +259,24 @@ async function harness({ blockScan = false, blockCollector = false } = {}) {
     scanRelease,
     collectorEntered,
     collectorRelease,
+    historyEntered,
+    historyRelease,
+    discoveryEntered,
+    discoveryRelease,
+    async storedProjects() {
+      return readdir(join(directory, "projects"));
+    },
+    async removeStoredProjects() {
+      for (const id of await readdir(join(directory, "projects")))
+        await rm(join(directory, "projects", id), {
+          recursive: true,
+          force: true,
+        });
+    },
+    async removeProjectsRoot() {
+      await rm(join(directory, "projects"), { recursive: true, force: true });
+    },
+    exportUsage: () => commands.get("hoosage.export")(),
     stop() {
       disposed = true;
       return module.exports.deactivate();
@@ -212,10 +288,147 @@ async function harness({ blockScan = false, blockCollector = false } = {}) {
     async cleanup() {
       scanRelease.resolve();
       collectorRelease.resolve();
+      historyRelease.resolve();
+      discoveryRelease.resolve();
       await module.exports.deactivate();
       await rm(directory, { recursive: true, force: true });
     },
   };
+}
+
+const deletedProject = await harness({
+  withWorkspace: true,
+  seedTailerCall: true,
+});
+try {
+  assert.equal((await deletedProject.api.getSnapshot()).calls.length, 1);
+  await deletedProject.removeStoredProjects();
+  assert.equal(
+    (await deletedProject.api.getSnapshot()).calls.length,
+    0,
+    "Removed project directories must not retain warm tailer usage",
+  );
+} finally {
+  await deletedProject.cleanup();
+}
+
+const deletedRoot = await harness({
+  withWorkspace: true,
+  seedTailerCall: true,
+});
+try {
+  assert.equal((await deletedRoot.api.getSnapshot()).calls.length, 1);
+  await deletedRoot.removeProjectsRoot();
+  const snapshot = await deletedRoot.api.getSnapshot();
+  assert.equal(
+    snapshot.calls.length,
+    0,
+    "Removed storage roots must not retain stale usage in an error snapshot",
+  );
+  assert.equal(snapshot.errors.length, 0);
+} finally {
+  await deletedRoot.cleanup();
+}
+
+const indexingExport = await harness({ blockScan: true });
+try {
+  await indexingExport.scanEntered.promise;
+  indexingExport.scanRelease.resolve();
+  await indexingExport.api.getSnapshot();
+  await indexingExport.exportUsage();
+  assert.equal(
+    indexingExport.counters.saveDialogs,
+    0,
+    "Export must not offer to save an incomplete indexing snapshot",
+  );
+  assert.equal(
+    indexingExport.counters.informationMessages,
+    1,
+    "Export explains why indexing must finish first",
+  );
+} finally {
+  await indexingExport.cleanup();
+}
+
+const importingExport = await harness({ blockHistory: true });
+try {
+  await importingExport.historyEntered.promise;
+  assert.equal(
+    (await importingExport.api.getSnapshot()).indexing,
+    true,
+    "Cached history loading must not mark an ongoing transcript scan complete",
+  );
+  await importingExport.exportUsage();
+  assert.equal(
+    importingExport.counters.saveDialogs,
+    0,
+    "Export must wait for transcript recovery as well as file tailing",
+  );
+  assert.equal(importingExport.counters.informationMessages, 1);
+} finally {
+  await importingExport.cleanup();
+}
+
+const failedSourceExport = await harness({
+  withWorkspace: true,
+  seedTailerCall: true,
+  failTailer: true,
+});
+try {
+  assert.equal((await failedSourceExport.api.getSnapshot()).errors.length, 1);
+  await failedSourceExport.exportUsage();
+  assert.equal(
+    failedSourceExport.counters.saveDialogs,
+    0,
+    "Source errors must not export an incomplete warm snapshot",
+  );
+  assert.equal(failedSourceExport.counters.informationMessages, 1);
+} finally {
+  await failedSourceExport.cleanup();
+}
+
+for (const [name, option, entered, release] of [
+  ["transcript import", "blockHistory", "historyEntered", "historyRelease"],
+  [
+    "workspace discovery",
+    "blockDiscovery",
+    "discoveryEntered",
+    "discoveryRelease",
+  ],
+]) {
+  const background = await harness({ [option]: true });
+  try {
+    await background[entered].promise;
+    let stopResolved = false;
+    const stopped = background.stop().then(() => {
+      stopResolved = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+      stopResolved,
+      false,
+      `Deactivation must await pending ${name}`,
+    );
+    background[release].resolve();
+    await stopped;
+    assert.deepEqual(
+      await background.storedProjects(),
+      [],
+      `${name} must not create project records after disposal`,
+    );
+    assert.equal(
+      background.counters.uiAfterDispose,
+      0,
+      `${name} must not update disposed UI`,
+    );
+    assert.equal(
+      background.counters.timersAfterDispose,
+      0,
+      `${name} must not restart indexing after disposal`,
+    );
+  } finally {
+    await background.cleanup();
+  }
 }
 
 const scanner = await harness({ blockScan: true });
@@ -281,6 +494,11 @@ try {
     "A collector finishing after disposal must be closed exactly once",
   );
   assert.equal(
+    collector.counters.scans,
+    0,
+    "Delayed collector setup must not start a new CLI scan after disposal",
+  );
+  assert.equal(
     collector.counters.timersAfterDispose,
     0,
     "Delayed collector setup must not restart indexing",
@@ -295,5 +513,5 @@ try {
 }
 
 console.log(
-  "HOOSAGE_EXTENSION_LIFECYCLE_OK: pending refresh disposal, no new scans/timers/UI, delayed collector closure",
+  "HOOSAGE_EXTENSION_LIFECYCLE_OK: pending refresh/import/discovery disposal, no new scans/timers/UI/writes, delayed collector closure",
 );

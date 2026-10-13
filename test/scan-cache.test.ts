@@ -272,7 +272,10 @@ test("restored CLI counters reject replayed events appended after restart", asyn
   try {
     const first = shutdown("first", 1, 1000, 100_000_000_000);
     const second = shutdown("second", 2, 2000, 200_000_000_000);
-    const file = await f.session("replay-cache", start(f.project) + first + second);
+    const file = await f.session(
+      "replay-cache",
+      start(f.project) + first + second,
+    );
     const before = new CliUsageScanner(f.root, f.cache);
     await before.poll(f.resolve);
     await appendFile(file, first + shutdown("third", 3, 3000, 300_000_000_000));
@@ -281,8 +284,55 @@ test("restored CLI counters reject replayed events appended after restart", asyn
     const full = new CliUsageScanner(f.root);
     await full.poll(f.resolve);
     assert.deepEqual(view(restored.calls.values()), view(full.calls.values()));
-    assert.equal([...restored.calls.values()].reduce((n, c) => n + (c.input ?? 0), 0), 3000);
-    assert.equal([...restored.calls.values()].reduce((n, c) => n + (c.nanoAiu ?? 0), 0), 300_000_000_000);
+    assert.equal(
+      [...restored.calls.values()].reduce((n, c) => n + (c.input ?? 0), 0),
+      3000,
+    );
+    assert.equal(
+      [...restored.calls.values()].reduce((n, c) => n + (c.nanoAiu ?? 0), 0),
+      300_000_000_000,
+    );
+  } finally {
+    await rm(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("cached CLI usage disappears with its missing event file or source root", async () => {
+  const f = await fixture();
+  try {
+    const file = await f.session(
+      "removed-file",
+      start(f.project) + shutdown("e1", 5, 1000, 1),
+    );
+    const scanner = new CliUsageScanner(f.root, f.cache);
+    await scanner.poll(f.resolve);
+    assert.equal(scanner.calls.size, 1);
+    await rm(file);
+    await scanner.poll(f.resolve);
+    assert.equal(
+      scanner.calls.size,
+      0,
+      "a surviving session folder is not usage data",
+    );
+    const restored = new CliUsageScanner(f.root, f.cache);
+    await restored.poll(f.resolve);
+    assert.equal(
+      restored.calls.size,
+      0,
+      "cached entries cannot revive absent events",
+    );
+
+    await f.session(
+      "removed-root",
+      start(f.project) + shutdown("e2", 6, 1000, 1),
+    );
+    await scanner.poll(f.resolve);
+    assert.equal(scanner.calls.size, 1);
+    await rm(f.root, { recursive: true });
+    await scanner.poll(f.resolve);
+    assert.equal(scanner.calls.size, 0);
+    assert.equal(scanner.detected, false);
+    assert.equal(scanner.caughtUp, true);
   } finally {
     await rm(f.dir, { recursive: true, force: true });
   }

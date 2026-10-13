@@ -313,3 +313,127 @@ test("invalid own-file recovery cannot mark unwritten calls as shared", async ()
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("republishes current usage when a running writer's own file is deleted", async () => {
+  const root = await mkdtemp(join(tmpdir(), "hoosage-shared-own-deletion-"));
+  try {
+    const writer = new SharedUsageSync(root, "shared", "a".repeat(24), "one");
+    const reader = new SharedUsageSync(root, "shared", "b".repeat(24), "two");
+    const usage = call("retained-locally", projectA);
+    await writer.poll([usage], projectA);
+    assert.equal((await reader.poll([], projectB)).length, 1);
+    const group = join(root, (await readdir(root))[0]!);
+    const path = join(group, (await readdir(group))[0]!);
+    await rm(path);
+    assert.deepEqual(await reader.poll([], projectB), []);
+    await writer.poll([usage], projectA);
+    assert.deepEqual(await reader.poll([], projectB), [
+      { ...usage, projectId: projectB },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("republishes missing records after its own shared file is replaced", async () => {
+  const root = await mkdtemp(join(tmpdir(), "hoosage-shared-own-replacement-"));
+  try {
+    const hostId = "a".repeat(24);
+    const writer = new SharedUsageSync(root, "shared", hostId, "one");
+    const reader = new SharedUsageSync(root, "shared", "b".repeat(24), "two");
+    const retained = call("retained", projectA);
+    const missing = call("missing", projectA);
+    await writer.poll([retained, missing], projectA);
+    await reader.poll([], projectB);
+    const group = join(root, (await readdir(root))[0]!);
+    const path = join(group, (await readdir(group))[0]!);
+    await writeFile(
+      `${path}.tmp`,
+      JSON.stringify({ version: 1, hostId, call: retained }) + "\n",
+    );
+    await rename(`${path}.tmp`, path);
+    await writer.poll([retained, missing], projectA);
+    assert.deepEqual(
+      (await reader.poll([], projectB)).map((entry) => entry.id).sort(),
+      ["missing", "retained"],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("separates a recovered complete record without a final newline from the next append", async () => {
+  const root = await mkdtemp(join(tmpdir(), "hoosage-shared-own-newline-"));
+  try {
+    const writer = () =>
+      new SharedUsageSync(root, "shared", "a".repeat(24), "one");
+    const reader = new SharedUsageSync(root, "shared", "b".repeat(24), "two");
+    const original = call("original", projectA);
+    const next = call("next", projectA);
+    await writer().poll([original], projectA);
+    const group = join(root, (await readdir(root))[0]!);
+    const path = join(group, (await readdir(group))[0]!);
+    await writeFile(path, (await readFile(path, "utf8")).trimEnd());
+    await writer().poll([original, next], projectA);
+    assert.deepEqual(
+      (await reader.poll([], projectB)).map((entry) => entry.id).sort(),
+      ["next", "original"],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("shares explicit session-cost coverage without inventing a measured zero", async () => {
+  const root = await mkdtemp(join(tmpdir(), "hoosage-shared-cost-coverage-"));
+  try {
+    const writer = new SharedUsageSync(root, "shared", "a".repeat(24), "one");
+    const reader = new SharedUsageSync(root, "shared", "b".repeat(24), "two");
+    const usage: UsageCall = {
+      ...call("covered", projectA),
+      source: "cli",
+      costIncludedInSessionTotal: true,
+    };
+    await writer.poll([usage], projectA);
+    const imported = await reader.poll([], projectB);
+    assert.deepEqual(imported, [{ ...usage, projectId: projectB }]);
+    assert.equal(imported[0]!.nanoAiu, undefined);
+    await assert.rejects(
+      writer.poll([{ ...usage, source: "chat" }], projectA),
+      /Invalid usage entry/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("recovers an interrupted final append without deleting complete records", async () => {
+  const root = await mkdtemp(join(tmpdir(), "hoosage-shared-partial-write-"));
+  try {
+    const writer = () =>
+      new SharedUsageSync(root, "shared", "a".repeat(24), "one");
+    const reader = new SharedUsageSync(root, "shared", "b".repeat(24), "two");
+    const original = call("original", projectA);
+    const next = call("next", projectA);
+    const running = writer();
+    await running.poll([original], projectA);
+    const group = join(root, (await readdir(root))[0]!);
+    const path = join(group, (await readdir(group))[0]!);
+    const contents = await readFile(path, "utf8");
+    await writeFile(path, contents + '{"version":1,"call":');
+    await running.poll([original, next], projectA);
+    assert.deepEqual(
+      (await reader.poll([], projectB)).map((entry) => entry.id).sort(),
+      ["next", "original"],
+    );
+    await writeFile(path, (await readFile(path, "utf8")) + '{"version":');
+    await writer().poll([original, next], projectA);
+    assert.deepEqual(
+      (await reader.poll([], projectB)).map((entry) => entry.id).sort(),
+      ["next", "original"],
+    );
+    assert.equal((await readFile(path, "utf8")).trim().split("\n").length, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

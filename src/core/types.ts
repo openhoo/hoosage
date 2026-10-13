@@ -30,11 +30,33 @@ export interface UsageCall {
   cacheRead?: number;
   cacheWrite?: number;
   nanoAiu?: number;
+  /** This unpriced CLI interval is covered by another reported session-total
+   * entry. Its individual cost remains unknown and is not estimated again. */
+  costIncludedInSessionTotal?: true;
   /** Model requests this entry represents. CLI shutdown deltas aggregate many
    * requests into one entry; absent means 1. */
   requests?: number;
   durationMs?: number;
   failed: boolean;
+}
+
+/** Cache tokens are input subsets. Contradictory measurements stay unknown. */
+export function validateCacheSubsets(
+  value: Pick<UsageCall, "input" | "cacheRead" | "cacheWrite">,
+): void {
+  if (value.input === undefined) return;
+  if (value.cacheRead !== undefined && value.cacheRead > value.input)
+    value.cacheRead = undefined;
+  if (value.cacheWrite !== undefined && value.cacheWrite > value.input)
+    value.cacheWrite = undefined;
+  if (
+    value.cacheRead !== undefined &&
+    value.cacheWrite !== undefined &&
+    value.cacheWrite > value.input - value.cacheRead
+  ) {
+    value.cacheRead = undefined;
+    value.cacheWrite = undefined;
+  }
 }
 
 export type TrackingStatus =

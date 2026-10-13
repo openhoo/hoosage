@@ -621,7 +621,7 @@ const priced = (
   inputTokens: number,
   outputTokens: number,
   count: number,
-  totalNanoAiu: number,
+  totalNanoAiu: number | undefined,
 ) => ({ ...metrics(inputTokens, outputTokens, 0, 0, count), totalNanoAiu });
 
 const sessionUsd = (scanner: CliUsageScanner) =>
@@ -863,14 +863,33 @@ test("replayed shutdown and checkpoint IDs do not reset cumulative counters", as
   const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
   try {
     const file = await sessionDir(dir, "replay");
-    const first = totalShutdown("s1", "2026-09-22T10:01:00Z", 100_000_000_000, "gpt-5.4", {
-      "gpt-5.4": priced(1000, 100, 4, 100_000_000_000),
-    });
-    await writeFile(file, [first, checkpoint("c1", "2026-09-22T10:02:00Z", 150_000_000_000), first,
-      totalShutdown("s2", "2026-09-22T10:03:00Z", 200_000_000_000, "gpt-5.4", {
-        "gpt-5.4": priced(2000, 200, 8, 200_000_000_000),
-      }), checkpoint("c1", "2026-09-22T10:02:00Z", 150_000_000_000),
-    ].join("\n") + "\n");
+    const first = totalShutdown(
+      "s1",
+      "2026-09-22T10:01:00Z",
+      100_000_000_000,
+      "gpt-5.4",
+      {
+        "gpt-5.4": priced(1000, 100, 4, 100_000_000_000),
+      },
+    );
+    await writeFile(
+      file,
+      [
+        first,
+        checkpoint("c1", "2026-09-22T10:02:00Z", 150_000_000_000),
+        first,
+        totalShutdown(
+          "s2",
+          "2026-09-22T10:03:00Z",
+          200_000_000_000,
+          "gpt-5.4",
+          {
+            "gpt-5.4": priced(2000, 200, 8, 200_000_000_000),
+          },
+        ),
+        checkpoint("c1", "2026-09-22T10:02:00Z", 150_000_000_000),
+      ].join("\n") + "\n",
+    );
     const scanner = new CliUsageScanner(dir);
     await scanner.poll(() => "p");
     assert.equal(totals([...scanner.calls.values()]).input, 2000);
@@ -886,11 +905,20 @@ test("model counters restarting without session cost count the first new run", a
   const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
   try {
     const file = await sessionDir(dir, "model-reset");
-    await writeFile(file, [
-      shutdown("s1", "2026-09-22T10:01:00Z", { "gpt-5.4": priced(1000, 100, 4, 100_000_000_000) }),
-      shutdown("s2", "2026-09-22T10:02:00Z", { "gpt-5.4": priced(200, 20, 1, 20_000_000_000) }),
-      shutdown("s3", "2026-09-22T10:03:00Z", { "gpt-5.4": priced(500, 50, 3, 50_000_000_000) }),
-    ].join("\n") + "\n");
+    await writeFile(
+      file,
+      [
+        shutdown("s1", "2026-09-22T10:01:00Z", {
+          "gpt-5.4": priced(1000, 100, 4, 100_000_000_000),
+        }),
+        shutdown("s2", "2026-09-22T10:02:00Z", {
+          "gpt-5.4": priced(200, 20, 1, 20_000_000_000),
+        }),
+        shutdown("s3", "2026-09-22T10:03:00Z", {
+          "gpt-5.4": priced(500, 50, 3, 50_000_000_000),
+        }),
+      ].join("\n") + "\n",
+    );
     const scanner = new CliUsageScanner(dir);
     await scanner.poll(() => "p");
     assert.equal(totals([...scanner.calls.values()]).input, 1500);
@@ -903,21 +931,782 @@ test("model counters restarting without session cost count the first new run", a
   }
 });
 
-
 test("explicit zero model snapshots establish a reset baseline without emitting fake usage", async () => {
   const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
   try {
     const file = await sessionDir(dir, "zero-reset");
-    await writeFile(file, [
-      shutdown("s1", "2026-09-22T10:01:00Z", { "gpt-5.4": metrics(1000, 100, 0, 0, 4) }),
-      shutdown("s2", "2026-09-22T10:02:00Z", { "gpt-5.4": metrics(0, 0, 0, 0, 0) }),
-      shutdown("s3", "2026-09-22T10:03:00Z", { "gpt-5.4": metrics(2000, 200, 0, 0, 8) }),
-    ].join("\n") + "\n");
+    await writeFile(
+      file,
+      [
+        shutdown("s1", "2026-09-22T10:01:00Z", {
+          "gpt-5.4": metrics(1000, 100, 0, 0, 4),
+        }),
+        shutdown("s2", "2026-09-22T10:02:00Z", {
+          "gpt-5.4": metrics(0, 0, 0, 0, 0),
+        }),
+        shutdown("s3", "2026-09-22T10:03:00Z", {
+          "gpt-5.4": metrics(2000, 200, 0, 0, 8),
+        }),
+      ].join("\n") + "\n",
+    );
     const scanner = new CliUsageScanner(dir);
     await scanner.poll(() => "p");
     assert.equal(scanner.calls.size, 2);
     assert.equal(totals([...scanner.calls.values()]).input, 3000);
     assert.equal(totals([...scanner.calls.values()]).calls, 12);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("newly appearing session totals include earlier reported model costs once", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-late-total-"));
+  try {
+    const file = await sessionDir(dir, "late-total");
+    await writeFile(
+      file,
+      [
+        shutdown("model-only", "2026-09-22T10:01:00Z", {
+          "gpt-5.4": priced(1000, 100, 4, 100_000_000_000),
+        }),
+        checkpoint(
+          "first-total",
+          "2026-09-22T10:02:00Z",
+          150_000_000_000,
+          "gpt-5.4",
+        ),
+        totalShutdown(
+          "with-total",
+          "2026-09-22T10:03:00Z",
+          200_000_000_000,
+          "gpt-5.4",
+          { "gpt-5.4": priced(2000, 200, 8, 200_000_000_000) },
+        ),
+        shutdown("total-missing-again", "2026-09-22T10:04:00Z", {
+          "gpt-5.4": priced(3000, 300, 12, 300_000_000_000),
+        }),
+        checkpoint(
+          "total-back",
+          "2026-09-22T10:05:00Z",
+          350_000_000_000,
+          "gpt-5.4",
+        ),
+      ].join("\n") + "\n",
+    );
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "project");
+    assert.equal(sessionUsd(scanner), 3.5);
+    assert.equal(
+      scanner.calls.get("cli:late-total:first-total:gpt-5.4")!.nanoAiu,
+      50_000_000_000,
+    );
+    assert.equal(
+      scanner.calls.get("cli:late-total:total-back:gpt-5.4")!.nanoAiu,
+      50_000_000_000,
+    );
+    assert.equal(totals([...scanner.calls.values()]).calls, 12);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("authoritative session totals replace earlier fallback estimates", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-late-total-"));
+  try {
+    const file = await sessionDir(dir, "estimate-covered");
+    await writeFile(
+      file,
+      shutdown("estimate", "2026-09-22T10:01:00Z", {
+        "gpt-5.4": metrics(1000, 100, 0, 0, 4),
+      }) + "\n",
+    );
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    const before = new CliUsageScanner(dir, cache);
+    await before.poll(() => "project");
+    assert.equal(callCost([...before.calls.values()][0]!).source, "estimated");
+    await appendFile(
+      file,
+      checkpoint(
+        "first-total",
+        "2026-09-22T10:02:00Z",
+        150_000_000_000,
+        "gpt-5.4",
+      ) + "\n",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(() => "project");
+    assert.equal(sessionUsd(restarted), 1.5);
+    assert.equal(totals([...restarted.calls.values()]).calls, 4);
+    assert.equal(totals([...restarted.calls.values()]).input, 1000);
+    const earlier = restarted.calls.get(
+      "cli:estimate-covered:estimate:gpt-5.4",
+    )!;
+    assert.equal(
+      earlier.nanoAiu,
+      undefined,
+      "the individual interval cost was not measured",
+    );
+    assert.deepEqual(callCost(earlier), {
+      source: "included",
+      reason: "Included in reported session total",
+    });
+    assert.equal(earlier.costIncludedInSessionTotal, true);
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(() => "project");
+    assert.deepEqual([...fresh.calls.values()], [...restarted.calls.values()]);
+    const csv = exportCsv([...restarted.calls.values()]);
+    assert.ok(csv.includes('"included","Included in reported session total"'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("model shutdowns without session totals cannot repeat cost already covered by checkpoints", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-checkpoint-overlap-"));
+  try {
+    const file = await sessionDir(dir, "overlap");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    await writeFile(
+      file,
+      [
+        shutdown("model-only", "2026-09-22T10:01:00Z", {
+          "gpt-5.4": priced(1000, 100, 1, 100_000_000_000),
+        }),
+        checkpoint(
+          "checkpoint",
+          "2026-09-22T10:02:00Z",
+          150_000_000_000,
+          "gpt-5.4",
+        ),
+      ].join("\n") + "\n",
+    );
+    const initial = new CliUsageScanner(dir, cache);
+    await initial.poll(() => "project");
+    assert.equal(sessionUsd(initial), 1.5);
+    await appendFile(
+      file,
+      [
+        shutdown("model-total", "2026-09-22T10:03:00Z", {
+          "gpt-5.4": priced(2000, 200, 2, 200_000_000_000),
+        }),
+        checkpoint(
+          "final-checkpoint",
+          "2026-09-22T10:04:00Z",
+          200_000_000_000,
+          "gpt-5.4",
+        ),
+      ].join("\n") + "\n",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(() => "project");
+    assert.equal(sessionUsd(restarted), 2);
+    assert.equal(
+      restarted.calls.get("cli:overlap:model-total:gpt-5.4")!.nanoAiu,
+      50_000_000_000,
+    );
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(() => "project");
+    assert.deepEqual(
+      JSON.parse(JSON.stringify([...restarted.calls.values()])),
+      JSON.parse(JSON.stringify([...fresh.calls.values()])),
+    );
+    assert.equal(totals([...restarted.calls.values()]).calls, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a decreasing model cost cannot lower the reliable baseline across cached restarts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-cost-drop-"));
+  try {
+    const file = await sessionDir(dir, "cost-drop");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    await writeFile(
+      file,
+      [
+        shutdown("first", "2026-09-22T10:01:00Z", {
+          "gpt-5.4": priced(100, 10, 1, 500),
+        }),
+        shutdown("decreased", "2026-09-22T10:02:00Z", {
+          "gpt-5.4": priced(200, 20, 2, 100),
+        }),
+      ].join("\n") + "\n",
+    );
+    const first = new CliUsageScanner(dir, cache);
+    await first.poll(() => "project");
+    assert.equal(
+      first.calls.get("cli:cost-drop:decreased:gpt-5.4")!.nanoAiu,
+      undefined,
+    );
+    await appendFile(
+      file,
+      shutdown("recovered", "2026-09-22T10:03:00Z", {
+        "gpt-5.4": priced(300, 30, 3, 600),
+      }) + "\n",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(() => "project");
+    assert.equal(
+      restarted.calls.get("cli:cost-drop:recovered:gpt-5.4")!.nanoAiu,
+      100,
+    );
+    assert.equal(
+      [...restarted.calls.values()].reduce(
+        (sum, call) => sum + (call.nanoAiu ?? 0),
+        0,
+      ),
+      600,
+    );
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(() => "project");
+    assert.deepEqual([...restarted.calls.values()], [...fresh.calls.values()]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a synchronized shutdown residual cannot suppress later model cost", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-cost-residual-"));
+  try {
+    const file = await sessionDir(dir, "residual");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    await writeFile(
+      file,
+      totalShutdown(
+        "covered",
+        "2026-09-22T10:01:00Z",
+        200_000_000_000,
+        "gpt-5.4",
+        {
+          "gpt-5.4": priced(1000, 100, 1, 100_000_000_000),
+        },
+      ) + "\n",
+    );
+    const first = new CliUsageScanner(dir, cache);
+    await first.poll(() => "project");
+    assert.equal(sessionUsd(first), 2);
+    await appendFile(
+      file,
+      [
+        shutdown("new-model-only", "2026-09-22T10:02:00Z", {
+          "gpt-5.4": priced(1500, 150, 2, 150_000_000_000),
+        }),
+        checkpoint("final", "2026-09-22T10:03:00Z", 250_000_000_000, "gpt-5.4"),
+      ].join("\n") + "\n",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(() => "project");
+    assert.equal(
+      restarted.calls.get("cli:residual:new-model-only:gpt-5.4")!.nanoAiu,
+      50_000_000_000,
+    );
+    assert.equal(sessionUsd(restarted), 2.5);
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(() => "project");
+    assert.deepEqual([...restarted.calls.values()], [...fresh.calls.values()]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("impossible CLI cache subsets remain unknown in snapshots and emitted deltas", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-cache-subsets-"));
+  try {
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    const impossible = await sessionDir(dir, "impossible");
+    const delayed = await sessionDir(dir, "delayed");
+    await writeFile(
+      impossible,
+      shutdown("first", "2026-09-22T10:01:00Z", {
+        "gpt-5.4": metrics(100, 10, 150, 20, 1),
+        "gpt-5.6": metrics(100, 10, 80, 30, 1),
+      }) + "\n",
+    );
+    await writeFile(
+      delayed,
+      shutdown("first", "2026-09-22T10:01:00Z", {
+        "gpt-5.4": metrics(100, 10, 50, 0, 1),
+      }) + "\n",
+    );
+    const scanner = new CliUsageScanner(dir, cache);
+    await scanner.poll(() => "project");
+    const individual = scanner.calls.get("cli:impossible:first:gpt-5.4")!;
+    assert.equal(individual.input, 100);
+    assert.equal(individual.cacheRead, undefined);
+    assert.equal(individual.cacheWrite, 20);
+    const combined = scanner.calls.get("cli:impossible:first:gpt-5.6")!;
+    assert.equal(combined.cacheRead, undefined);
+    assert.equal(combined.cacheWrite, undefined);
+    await appendFile(
+      delayed,
+      shutdown("second", "2026-09-22T10:02:00Z", {
+        "gpt-5.4": metrics(150, 15, 140, 0, 2),
+      }) + "\n",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(() => "project");
+    const delta = restarted.calls.get("cli:delayed:second:gpt-5.4")!;
+    assert.equal(delta.input, 50);
+    assert.equal(delta.cacheRead, undefined);
+    assert.equal(totals([...restarted.calls.values()]).cacheRead, 50);
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(() => "project");
+    const byId = (a: { id: string }, b: { id: string }) =>
+      a.id.localeCompare(b.id);
+    assert.deepEqual(
+      [...restarted.calls.values()].sort(byId),
+      [...fresh.calls.values()].sort(byId),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("late YAML cannot backfill explicitly cleared intervals from a later resume", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-cleared-interval-"));
+  try {
+    const file = await sessionDir(dir, "resumed");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    const resolver = (cwd: string) =>
+      cwd === "/work/A"
+        ? "project-a"
+        : cwd === "/work/B"
+          ? "project-b"
+          : undefined;
+    await writeFile(
+      file,
+      [
+        start("/work/A"),
+        shutdown("first", "2026-09-22T10:01:00Z", {
+          "gpt-5.4": metrics(100, 10, 0, 0, 1),
+        }),
+        JSON.stringify({
+          type: "session.resume",
+          data: { context: { cwd: null } },
+        }),
+        shutdown("cleared", "2026-09-22T10:02:00Z", {
+          "gpt-5.4": metrics(200, 20, 0, 0, 2),
+        }),
+      ].join("\n") + "\n",
+    );
+    const scanner = new CliUsageScanner(dir, cache);
+    await scanner.poll(resolver);
+    assert.equal(
+      scanner.calls.get("cli:resumed:cleared:gpt-5.4")!.projectId,
+      CLI_PROJECT_ID,
+    );
+    await appendFile(
+      file,
+      [
+        JSON.stringify({
+          type: "session.resume",
+          data: { context: { cwd: "/work/B" } },
+        }),
+        shutdown("recovered", "2026-09-22T10:03:00Z", {
+          "gpt-5.4": metrics(300, 30, 0, 0, 3),
+        }),
+      ].join("\n") + "\n",
+    );
+    await scanner.poll(resolver);
+    await writeFile(
+      join(dir, "resumed", "workspace.yaml"),
+      "client_name: copilot-intellij\ncwd: /work/A\n",
+    );
+    await scanner.poll(resolver);
+    assert.equal(
+      scanner.calls.get("cli:resumed:first:gpt-5.4")!.projectId,
+      "project-a",
+    );
+    assert.equal(
+      scanner.calls.get("cli:resumed:cleared:gpt-5.4")!.projectId,
+      JETBRAINS_PROJECT_ID,
+    );
+    assert.equal(
+      scanner.calls.get("cli:resumed:recovered:gpt-5.4")!.projectId,
+      "project-b",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(resolver);
+    assert.deepEqual(
+      [...restarted.calls.values()],
+      [...scanner.calls.values()],
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a model reset before the session-total reset is not counted twice across restart", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-reset-order-"));
+  try {
+    const file = await sessionDir(dir, "reset-order");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    await writeFile(
+      file,
+      [
+        totalShutdown(
+          "old-run",
+          "2026-09-22T10:01:00Z",
+          200_000_000_000,
+          "gpt-5.4",
+          {
+            "gpt-5.4": priced(1000, 100, 10, 100_000_000_000),
+          },
+        ),
+        shutdown("model-reset", "2026-09-22T10:02:00Z", {
+          "gpt-5.4": priced(500, 50, 5, 50_000_000_000),
+        }),
+      ].join("\n") + "\n",
+    );
+    const initial = new CliUsageScanner(dir, cache);
+    await initial.poll(() => "project");
+    assert.equal(sessionUsd(initial), 2.5);
+    await appendFile(
+      file,
+      [
+        totalShutdown(
+          "total-reset",
+          "2026-09-22T10:03:00Z",
+          50_000_000_000,
+          "gpt-5.4",
+          {
+            "gpt-5.4": priced(500, 50, 5, 50_000_000_000),
+          },
+        ),
+        checkpoint(
+          "checkpoint",
+          "2026-09-22T10:04:00Z",
+          80_000_000_000,
+          "gpt-5.4",
+        ),
+        shutdown("later-model", "2026-09-22T10:05:00Z", {
+          "gpt-5.4": priced(800, 80, 8, 80_000_000_000),
+        }),
+      ].join("\n") + "\n",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(() => "project");
+    assert.equal(sessionUsd(restarted), 2.8);
+    assert.equal(totals([...restarted.calls.values()]).input, 1800);
+    assert.equal(totals([...restarted.calls.values()]).calls, 18);
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(() => "project");
+    assert.deepEqual([...restarted.calls.values()], [...fresh.calls.values()]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("late YAML uses the original workspace cwd for intervals before a resume", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-original-workspace-"));
+  try {
+    const file = await sessionDir(dir, "original");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    const resolver = (cwd: string) =>
+      cwd === "/work/A"
+        ? "project-a"
+        : cwd === "/work/B"
+          ? "project-b"
+          : undefined;
+    await writeFile(
+      file,
+      shutdown("first", "2026-09-22T10:01:00Z", {
+        "gpt-5.4": metrics(100, 10, 0, 0, 1),
+      }) + "\n",
+    );
+    const scanner = new CliUsageScanner(dir, cache);
+    await scanner.poll(resolver);
+    await appendFile(
+      file,
+      [
+        JSON.stringify({
+          type: "session.resume",
+          data: { context: { cwd: "/work/B" } },
+        }),
+        shutdown("later", "2026-09-22T10:02:00Z", {
+          "gpt-5.4": metrics(200, 20, 0, 0, 2),
+        }),
+      ].join("\n") + "\n",
+    );
+    await scanner.poll(resolver);
+    await writeFile(
+      join(dir, "original", "workspace.yaml"),
+      "client_name: copilot-intellij\ncwd: /work/A\n",
+    );
+    await scanner.poll(resolver);
+    assert.equal(
+      scanner.calls.get("cli:original:first:gpt-5.4")!.projectId,
+      "project-a",
+    );
+    assert.equal(
+      scanner.calls.get("cli:original:later:gpt-5.4")!.projectId,
+      "project-b",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(resolver);
+    assert.deepEqual(
+      [...restarted.calls.values()],
+      [...scanner.calls.values()],
+    );
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(resolver);
+    assert.deepEqual([...fresh.calls.values()], [...scanner.calls.values()]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI timestamps reject pre-epoch and non-string dates while preserving epoch zero", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-epoch-"));
+  try {
+    const file = await sessionDir(dir, "epoch");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    const events = [
+      "1969-12-31T23:59:59Z",
+      0,
+      ["1970-01-01T00:00:00Z"],
+      "1970-01-01T00:00:00Z",
+    ].map((timestamp, index) =>
+      JSON.stringify({
+        type: "session.shutdown",
+        id: `date-${index}`,
+        timestamp,
+        data: { modelMetrics: { "gpt-5.4": metrics(100, 10, 0, 0, 1) } },
+      }),
+    );
+    await writeFile(file, events.join("\n") + "\n");
+    const scanner = new CliUsageScanner(dir, cache);
+    await scanner.poll(() => "project");
+    assert.equal(scanner.skippedLines, 3);
+    assert.equal(scanner.calls.size, 1);
+    assert.equal(scanner.calls.get("cli:epoch:date-3:gpt-5.4")!.timestamp, 0);
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(() => "project");
+    assert.deepEqual(
+      [...restarted.calls.values()],
+      [...scanner.calls.values()],
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a newly known cumulative model cost establishes checkpoint coverage without pricing the unknown interval", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-known-cost-coverage-"));
+  try {
+    const file = await sessionDir(dir, "known-coverage");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    await writeFile(
+      file,
+      [
+        shutdown("unknown", "2026-09-22T10:01:00Z", {
+          "gpt-5.4": priced(100, 10, 1, undefined),
+        }),
+        shutdown("newly-known", "2026-09-22T10:02:00Z", {
+          "gpt-5.4": priced(200, 20, 2, 100_000_000_000),
+        }),
+        checkpoint(
+          "covered",
+          "2026-09-22T10:03:00Z",
+          100_000_000_000,
+          "gpt-5.4",
+        ),
+      ].join("\n") + "\n",
+    );
+    const initial = new CliUsageScanner(dir, cache);
+    await initial.poll(() => "project");
+    assert.equal(
+      initial.calls.get("cli:known-coverage:newly-known:gpt-5.4")!.nanoAiu,
+      undefined,
+    );
+    assert.equal(
+      initial.calls.get("cli:known-coverage:newly-known:gpt-5.4")!
+        .costIncludedInSessionTotal,
+      true,
+    );
+    assert.equal(sessionUsd(initial), 1);
+    await appendFile(
+      file,
+      shutdown("later", "2026-09-22T10:04:00Z", {
+        "gpt-5.4": priced(300, 30, 3, 150_000_000_000),
+      }) + "\n",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(() => "project");
+    assert.equal(
+      restarted.calls.get("cli:known-coverage:later:gpt-5.4")!.nanoAiu,
+      50_000_000_000,
+    );
+    assert.equal(sessionUsd(restarted), 1.5);
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(() => "project");
+    assert.deepEqual(
+      JSON.parse(JSON.stringify([...restarted.calls.values()])),
+      JSON.parse(JSON.stringify([...fresh.calls.values()])),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ambiguous workspace metadata cannot select the first project's cwd or client", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-workspace-ambiguity-"));
+  try {
+    const variants = [
+      "cwd: /work/first\ncwd: /work/second\nclient_name: copilot-intellij\n",
+      "cwd: /work/first\nmetadata:\n  'cwd': /work/second\nclient_name: copilot-intellij\n",
+      "client_name: copilot-intellij\nclient_name: copilot-cli\ncwd: /work/first\n",
+      'cwd: /work/first\n"c\\u0077d": /work/second\nclient_name: copilot-intellij\n',
+    ];
+    for (let i = 0; i < variants.length; i++) {
+      const id = `ambiguous-${i}`;
+      const file = await sessionDir(dir, id);
+      await writeFile(
+        file,
+        shutdown("usage", "2026-09-22T10:01:00Z", {
+          "gpt-5.4": metrics(100, 10, 0, 0, 1),
+        }) + "\n",
+      );
+      await writeFile(join(dir, id, "workspace.yaml"), variants[i]!);
+    }
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll(() => "first-project");
+    assert.equal(scanner.calls.size, variants.length);
+    assert.ok(
+      [...scanner.calls.values()].every(
+        (call) => call.projectId === CLI_PROJECT_ID && call.source === "cli",
+      ),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("workspace metadata supports nested quoted keys, escaped strings and literal path quotes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-workspace-quotes-"));
+  try {
+    const variants: Array<[string, string]> = [
+      [
+        'metadata:\n  "client_name": "copilot-intellij"\n  "cwd": "C:\\\\work\\\\project" # comment\n',
+        "C:\\work\\project",
+      ],
+      [
+        "metadata:\n  client_name: 'copilot-intellij'\n  cwd: '/work/it''s # quoted' # comment\n",
+        "/work/it's # quoted",
+      ],
+      [
+        "client_name: copilot-intellij\ncwd: /work/it's#literal # comment\n",
+        "/work/it's#literal",
+      ],
+      [
+        "client_name: copilot-intellij\ncwd: /work/repeated\nmetadata:\n  cwd: /work/repeated\n",
+        "/work/repeated",
+      ],
+    ];
+    for (let i = 0; i < variants.length; i++) {
+      const id = `quoted-${i}`;
+      const file = await sessionDir(dir, id);
+      await writeFile(
+        file,
+        shutdown("usage", "2026-09-22T10:01:00Z", {
+          "gpt-5.4": metrics(100, 10, 0, 0, 1),
+        }) + "\n",
+      );
+      await writeFile(join(dir, id, "workspace.yaml"), variants[i]![0]);
+    }
+    const scanner = new CliUsageScanner(dir);
+    await scanner.poll((cwd) => variants.find(([, path]) => path === cwd)?.[1]);
+    assert.deepEqual(
+      [...scanner.calls.values()]
+        .map((call) => [call.source, call.projectId])
+        .sort(),
+      variants.map(([, path]) => ["jetbrains", path]).sort(),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("explicit invalid resume cwd clears prior attribution through cached restart and late workspace metadata", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-cleared-cwd-"));
+  try {
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    for (const [id, value] of [
+      ["null", null],
+      ["number", 42],
+    ] as const) {
+      const file = await sessionDir(dir, id);
+      await writeFile(
+        join(dir, id, "workspace.yaml"),
+        "client_name: copilot-intellij\ncwd: /work/first\n",
+      );
+      await writeFile(
+        file,
+        [
+          shutdown("first", "2026-09-22T10:01:00Z", {
+            "gpt-5.4": metrics(100, 10, 0, 0, 1),
+          }),
+          JSON.stringify({
+            type: "session.resume",
+            data: { context: { cwd: value } },
+          }),
+          shutdown("cleared", "2026-09-22T10:02:00Z", {
+            "gpt-5.4": metrics(200, 20, 0, 0, 2),
+          }),
+        ].join("\n") + "\n",
+      );
+    }
+    const lateFile = await sessionDir(dir, "late");
+    await writeFile(
+      lateFile,
+      [
+        start("/work/first"),
+        JSON.stringify({
+          type: "session.resume",
+          data: { context: { cwd: null } },
+        }),
+        shutdown("cleared", "2026-09-22T10:02:00Z", {
+          "gpt-5.4": metrics(100, 10, 0, 0, 1),
+        }),
+      ].join("\n") + "\n",
+    );
+    const resolver = (cwd: string) =>
+      cwd === "/work/first" ? "first-project" : undefined;
+    const scanner = new CliUsageScanner(dir, cache);
+    await scanner.poll(resolver);
+    for (const id of ["null", "number"]) {
+      assert.equal(
+        scanner.calls.get(`cli:${id}:first:gpt-5.4`)!.projectId,
+        "first-project",
+      );
+      assert.equal(
+        scanner.calls.get(`cli:${id}:cleared:gpt-5.4`)!.projectId,
+        JETBRAINS_PROJECT_ID,
+      );
+    }
+    await writeFile(
+      join(dir, "late", "workspace.yaml"),
+      "client_name: copilot-intellij\ncwd: /work/first\n",
+    );
+    for (const id of ["null", "number", "late"])
+      await appendFile(
+        join(dir, id, "events.jsonl"),
+        shutdown("after-restart", "2026-09-22T10:03:00Z", {
+          "gpt-5.4": metrics(300, 30, 0, 0, 3),
+        }) + "\n",
+      );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(resolver);
+    for (const id of ["null", "number", "late"]) {
+      assert.equal(
+        restarted.calls.get(`cli:${id}:cleared:gpt-5.4`)!.projectId,
+        JETBRAINS_PROJECT_ID,
+      );
+      assert.equal(
+        restarted.calls.get(`cli:${id}:after-restart:gpt-5.4`)!.projectId,
+        JETBRAINS_PROJECT_ID,
+      );
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

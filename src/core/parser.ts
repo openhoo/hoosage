@@ -1,4 +1,4 @@
-import type { UsageCall } from "./types";
+import { validateCacheSubsets, type UsageCall } from "./types";
 
 const object = (x: unknown): Record<string, unknown> =>
   x !== null && typeof x === "object" && !Array.isArray(x)
@@ -77,7 +77,7 @@ export function parseSpan(
       attrs["github.copilot.chat.session_id"] ??
       attrs["copilot_chat.chat_session_id"],
   );
-  return {
+  const call: UsageCall = {
     id: `${traceId.toLowerCase()}:${spanId.toLowerCase()}`,
     projectId,
     timestamp: Math.floor(start),
@@ -99,6 +99,8 @@ export function parseSpan(
       object(span.status).code === 2 ||
       object(span.status).code === "STATUS_CODE_ERROR",
   };
+  validateCacheSubsets(call);
+  return call;
 }
 
 export function parseLine(line: string, projectId: string): UsageCall[] {

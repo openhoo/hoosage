@@ -113,6 +113,7 @@ const esc = (s: string) =>
 export async function activate(context: vscode.ExtensionContext) {
   if (!vscode.workspace.isTrusted) return;
   let disposed = false;
+  const backgroundTasks: Promise<void>[] = [];
   const storage = context.globalStorageUri.fsPath;
   const storeId = createHash("sha256")
     .update(storage)
@@ -323,22 +324,29 @@ export async function activate(context: vscode.ExtensionContext) {
   // These are empty placeholders, not evidence of earlier Chat collection.
   // Remote workspace URIs have different identities and stay isolated.
   if (!remoteName)
-    void (async () => {
-      for (const folder of await discoverKnownFolders(storage)) {
-        if (folder.id === current?.id) continue;
-        discovering.add(folder.id);
-        try {
-          await mkdir(join(root, folder.id), { recursive: true, mode: 0o700 });
-          await persistProject(placeholderProject(folder));
-        } catch {
-          /* One unavailable project directory does not block the rest. */
-        } finally {
-          discovering.delete(folder.id);
+    backgroundTasks.push(
+      (async () => {
+        for (const folder of await discoverKnownFolders(storage)) {
+          if (disposed) return;
+          if (folder.id === current?.id) continue;
+          discovering.add(folder.id);
+          try {
+            await mkdir(join(root, folder.id), {
+              recursive: true,
+              mode: 0o700,
+            });
+            if (disposed) return;
+            await persistProject(placeholderProject(folder));
+          } catch {
+            /* One unavailable project directory does not block the rest. */
+          } finally {
+            discovering.delete(folder.id);
+          }
         }
-      }
-    })().catch(() => {
-      /* A missing workspaceStorage directory leaves discovery best-effort. */
-    });
+      })().catch(() => {
+        /* A missing workspaceStorage directory leaves discovery best-effort. */
+      }),
+    );
 
   // Import earlier Chat usage that VS Code itself stored in its local Chat
   // transcripts, once per activation. Recovered entries are saved per project
@@ -364,77 +372,88 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   };
   if (!remoteName)
-    void (async () => {
-      // Entries imported by earlier windows are shown right away; the
-      // transcript scan below only adds what is new since then.
-      try {
-        const loaded = new Map<string, UsageCall[]>();
-        for (const id of (await readdir(root).catch(() => [])).filter(
-          isHistoryId,
-        )) {
-          const calls = await storedHistory(id);
-          if (calls.length) loaded.set(id, calls);
+    backgroundTasks.push(
+      (async () => {
+        // Entries imported by earlier windows are shown right away; the
+        // transcript scan below only adds what is new since then.
+        try {
+          const loaded = new Map<string, UsageCall[]>();
+          for (const id of (await readdir(root).catch(() => [])).filter(
+            isHistoryId,
+          )) {
+            if (disposed) return;
+            const calls = await storedHistory(id);
+            if (calls.length) loaded.set(id, calls);
+          }
+          chatHistory = loaded;
+        } finally {
+          chatHistoryLoaded = true;
         }
-        chatHistory = loaded;
-      } finally {
+        const recovered = new Map<string, UsageCall[]>();
+        if (disposed) return;
+        try {
+          const scanned = await scanChatHistory(storage, scanCache);
+          if (disposed) return;
+          for (const project of scanned.projects) {
+            if (project.id === current?.id) continue;
+            discovering.add(project.id);
+            try {
+              await mkdir(join(root, project.id), {
+                recursive: true,
+                mode: 0o700,
+              });
+              if (disposed) return;
+              await persistProject(project);
+            } catch {
+              /* One unavailable project directory does not block the rest. */
+            } finally {
+              discovering.delete(project.id);
+            }
+          }
+          for (const call of scanned.calls)
+            recovered.set(call.projectId, [
+              ...(recovered.get(call.projectId) ?? []),
+              call,
+            ]);
+        } catch {
+          /* Unreadable transcripts leave previously imported history intact. */
+        }
+        const result = new Map<string, UsageCall[]>();
+        let ids: string[] = [];
+        try {
+          ids = await readdir(root);
+        } catch {}
+        for (const id of new Set([...ids, ...recovered.keys()])) {
+          if (disposed) return;
+          if (!isHistoryId(id)) continue;
+          const stored = await storedHistory(id);
+          const merged = mergeStoredHistory(stored, recovered.get(id) ?? []);
+          if (merged.changed)
+            try {
+              await mkdir(join(root, id), { recursive: true, mode: 0o700 });
+              if (disposed) return;
+              await writeFile(
+                importedHistoryFile(id),
+                JSON.stringify(storedHistoryPayload(merged.calls)),
+                { mode: 0o600 },
+              );
+            } catch {
+              /* Unsaved entries are still shown and retried next activation. */
+            }
+          if (merged.calls.length) result.set(id, merged.calls);
+        }
+        chatHistory = result;
+        chatHistoryComplete = true;
+        // Transcript recovery runs in the background. Refresh once it finishes,
+        // even when another snapshot was already being read at that moment.
+        const pending = refreshPromise;
+        if (pending) void pending.finally(() => void refresh());
+        else void refresh();
+      })().catch(() => {
         chatHistoryLoaded = true;
-      }
-      const recovered = new Map<string, UsageCall[]>();
-      try {
-        const scanned = await scanChatHistory(storage, scanCache);
-        for (const project of scanned.projects) {
-          if (project.id === current?.id) continue;
-          discovering.add(project.id);
-          try {
-            await mkdir(join(root, project.id), {
-              recursive: true,
-              mode: 0o700,
-            });
-            await persistProject(project);
-          } catch {
-            /* One unavailable project directory does not block the rest. */
-          } finally {
-            discovering.delete(project.id);
-          }
-        }
-        for (const call of scanned.calls)
-          recovered.set(call.projectId, [
-            ...(recovered.get(call.projectId) ?? []),
-            call,
-          ]);
-      } catch {
-        /* Unreadable transcripts leave previously imported history intact. */
-      }
-      const result = new Map<string, UsageCall[]>();
-      let ids: string[] = [];
-      try {
-        ids = await readdir(root);
-      } catch {}
-      for (const id of new Set([...ids, ...recovered.keys()])) {
-        if (!isHistoryId(id)) continue;
-        const stored = await storedHistory(id);
-        const merged = mergeStoredHistory(stored, recovered.get(id) ?? []);
-        if (merged.changed)
-          try {
-            await mkdir(join(root, id), { recursive: true, mode: 0o700 });
-            await writeFile(
-              importedHistoryFile(id),
-              JSON.stringify(storedHistoryPayload(merged.calls)),
-              { mode: 0o600 },
-            );
-          } catch {
-            /* Unsaved entries are still shown and retried next activation. */
-          }
-        if (merged.calls.length) result.set(id, merged.calls);
-      }
-      chatHistory = result;
-      chatHistoryComplete = true;
-      // Transcript recovery runs in the background. Refresh once it finishes,
-      // even when another snapshot was already being read at that moment.
-      const pending = refreshPromise;
-      if (pending) void pending.finally(() => void refresh());
-      else void refresh();
-    })();
+        chatHistoryComplete = true;
+      }),
+    );
 
   const endpoint = () =>
     connection
@@ -533,7 +552,18 @@ export async function activate(context: vscode.ExtensionContext) {
         "Saved Chat history is missing for this previously registered project on this host. Check the original VS Code profile or remote host.",
       );
     await ensureCollector();
-    const ids = (await readdir(root)).filter((id) => /^[a-f0-9]{24}$/.test(id));
+    if (disposed) return snapshot;
+    const savedIds = await readdir(root).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    });
+    const ids = savedIds.filter((id) => /^[a-f0-9]{24}$/.test(id));
+    const activeProjectIds = new Set(ids);
+    for (const id of tailers.keys())
+      if (!activeProjectIds.has(id)) tailers.delete(id);
+    const savedHistoryIds = new Set(savedIds);
+    for (const id of chatHistory.keys())
+      if (!savedHistoryIds.has(id)) chatHistory.delete(id);
     for (let start = 0; start < ids.length; start += 8)
       await Promise.all(
         ids.slice(start, start + 8).map(async (id) => {
@@ -545,6 +575,7 @@ export async function activate(context: vscode.ExtensionContext) {
             );
             if (!project || project.id !== id)
               throw new Error("Invalid saved project metadata.");
+            if (disposed) return;
             projects.push(project);
             if (!tailers.has(id))
               tailers.set(id, new UsageTailer(capture(id), id));
@@ -563,6 +594,7 @@ export async function activate(context: vscode.ExtensionContext) {
           }
         }),
       );
+    if (disposed) return snapshot;
     if (current && !projects.some((p) => p.id === current.id))
       projects.unshift(current);
     const projectIndex = new ProjectIndex(projects);
@@ -573,6 +605,7 @@ export async function activate(context: vscode.ExtensionContext) {
         "Could not read Copilot CLI session data. Check storage permissions and refresh.",
       );
     }
+    if (disposed) return snapshot;
     if (readWsl())
       try {
         await wslSessions!.poll((cwd) => projectIndex.resolve(cwd));
@@ -581,6 +614,7 @@ export async function activate(context: vscode.ExtensionContext) {
           "Could not read Copilot CLI session data from WSL. Check that the distribution is running and refresh.",
         );
       }
+    if (disposed) return snapshot;
     const sessionCalls = [
       ...cliScanner.calls.values(),
       ...(readWsl() ? wslSessions!.calls : []),
@@ -681,6 +715,7 @@ export async function activate(context: vscode.ExtensionContext) {
               : "This project is registered automatically. Use Copilot Chat to record usage; reload if you just enabled tracking.");
     const indexing =
       !chatHistoryLoaded ||
+      !chatHistoryComplete ||
       [...tailers.values()].some((t) => !t.caughtUp) ||
       !cliScanner.caughtUp ||
       (readWsl() && !wslSessions!.caughtUp);
@@ -1092,6 +1127,21 @@ export async function activate(context: vscode.ExtensionContext) {
     endDate?: string,
     startDate?: string,
   ) {
+    if (disposed) return;
+    await refresh();
+    if (disposed) return;
+    if (snapshot.indexing) {
+      await vscode.window.showInformationMessage(
+        "Usage is still being indexed. Wait for indexing to finish, then export again.",
+      );
+      return;
+    }
+    if (snapshot.errors.length) {
+      await vscode.window.showInformationMessage(
+        "Some usage could not be read. Resolve the storage errors and refresh before exporting.",
+      );
+      return;
+    }
     const now = Date.now();
     const end = periodEnd(now, endDate);
     const bounds = startDate
@@ -1107,7 +1157,7 @@ export async function activate(context: vscode.ExtensionContext) {
       ),
       filters: format === "csv" ? { CSV: ["csv"] } : { JSON: ["json"] },
     });
-    if (!uri) return;
+    if (!uri || disposed) return;
     const content =
       format === "csv"
         ? exportCsv(calls)
@@ -1281,6 +1331,7 @@ export async function activate(context: vscode.ExtensionContext) {
     disposalPromise = (async () => {
       await collector?.close();
       collector = undefined;
+      await Promise.allSettled(backgroundTasks);
       if (refreshPromise) await refreshPromise;
     })();
     return disposalPromise;

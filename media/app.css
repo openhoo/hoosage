@@ -1246,6 +1246,7 @@ footer svg {
   box-shadow: 0 8px 35px #0004;
   z-index: 20;
   max-width: 90%;
+  pointer-events: none;
 }
 .toast:empty {
   display: none;

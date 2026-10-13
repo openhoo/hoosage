@@ -51,10 +51,11 @@ export async function testHost() {
   const copilot =
     process.env.COPILOT_EXTENSION_PATH ??
     (await bundledCopilot(vscodeExecutablePath));
+  // An unpacked candidate VSIX lets the same isolated host qualify the
+  // packaged production bundle and assets, as well as the source checkout.
+  const extension = resolve(process.env.HOOSAGE_EXTENSION_PATH ?? ".");
   return {
     vscodeExecutablePath,
-    extensionDevelopmentPath: copilot
-      ? [resolve("."), copilot]
-      : resolve("."),
+    extensionDevelopmentPath: copilot ? [extension, copilot] : extension,
   };
 }

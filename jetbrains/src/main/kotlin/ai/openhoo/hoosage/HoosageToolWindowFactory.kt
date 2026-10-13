@@ -26,6 +26,9 @@ import java.awt.GridLayout
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.math.RoundingMode
@@ -59,9 +62,8 @@ class HoosageToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 }
 
-private class UsageView(private val project: Project) : Disposable {
+internal class UsageView(private val project: Project, private val scanner: UsageScanner = UsageScanner()) : Disposable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val scanner = UsageScanner()
     private val refreshLock = Mutex()
     private val projectPath: Path? = project.basePath?.let { Paths.get(it) }
     private val heading = JLabel("hoosage.")
@@ -75,6 +77,7 @@ private class UsageView(private val project: Project) : Disposable {
     private val sessions = table(arrayOf("Completed", "Model", "Requests", "Tokens", "USD"))
     private var latest = ScanResult(emptyList(), 0, "Reading local Copilot usage…")
     private var demo = false
+    private var scanning = false
     val component = JPanel(BorderLayout())
 
     init {
@@ -93,6 +96,7 @@ private class UsageView(private val project: Project) : Disposable {
         val body = JPanel().apply {
             layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.Y_AXIS)
             border = JBUI.Borders.empty(4, 16, 16, 16)
+            cards.alignmentX = 0f
             cards.maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(230))
             add(cards)
             add(section("Models", models))
@@ -130,14 +134,20 @@ private class UsageView(private val project: Project) : Disposable {
         }
     }
 
-    private fun requestRefresh() { scope.launch { scanAndRender() } }
+    private fun requestRefresh() {
+        if (!scope.isActive) return
+        scanning = true
+        refresh.isEnabled = false
+        render()
+        scope.launch { scanAndRender() }
+    }
 
     private suspend fun scanAndRender() {
         // Coalesce manual and periodic refreshes instead of queuing scans and
         // allowing an older result to replace the newest one on the EDT.
         if (!refreshLock.tryLock()) return
         try {
-            withContext(Dispatchers.EDT) { refresh.isEnabled = false }
+            withContext(Dispatchers.EDT) { scanning = true; refresh.isEnabled = false; render() }
             val path = projectPath
             val result = try {
                 if (path == null) ScanResult(emptyList(), 0, "Open a local project to see usage.")
@@ -147,10 +157,14 @@ private class UsageView(private val project: Project) : Disposable {
             } catch (_: Exception) {
                 ScanResult(emptyList(), 1, "Could not read local Copilot usage. Refresh to try again.")
             }
-            withContext(Dispatchers.EDT) { latest = result; render() }
+            withContext(Dispatchers.EDT) { latest = result }
         } finally {
             refreshLock.unlock()
-            if (scope.isActive) withContext(Dispatchers.EDT) { refresh.isEnabled = true }
+            if (scope.isActive) withContext(Dispatchers.EDT) {
+                scanning = false
+                refresh.isEnabled = true
+                render()
+            }
         }
     }
 
@@ -181,27 +195,38 @@ private class UsageView(private val project: Project) : Disposable {
         })
         status.text = when {
             demo -> "Preview · sample data. Nothing in this view is exported."
-            latest.skipped > 0 -> "${latest.status} ${latest.skipped} record(s) skipped or truncated."
+            scanning -> "Reading local Copilot usage… Export is available after refresh."
+            latest.skipped > 0 -> "${latest.status} ${latest.skipped} record(s) skipped or truncated. Export is unavailable until source records can be read."
             entries.isEmpty() && latest.entries.isNotEmpty() -> "No completed sessions in the selected date range."
             else -> latest.status
         }
-        export.isEnabled = !demo && entries.isNotEmpty()
+        val exportReason = when {
+            demo -> "Exit preview to export usage."
+            scanning -> "Export is unavailable while usage is being refreshed."
+            latest.skipped > 0 -> "Resolve skipped or unreadable source records and refresh before exporting."
+            entries.isEmpty() -> "No completed usage records in the selected date range."
+            else -> null
+        }
+        export.isEnabled = exportReason == null
+        export.toolTipText = exportReason
+        export.accessibleContext.accessibleDescription = exportReason ?: "Export the selected usage records as CSV."
         cards.revalidate(); cards.repaint()
     }
 
     private fun exportSelected() {
-        if (demo) return
+        if (demo || scanning || latest.skipped > 0) return
         val entries = selected()
         if (entries.isEmpty()) return
         val chooser = JFileChooser().apply { selectedFile = java.io.File("hoosage-jetbrains.csv") }
         if (chooser.showSaveDialog(component) != JFileChooser.APPROVE_OPTION) return
         val destination = chooser.selectedFile.toPath()
-        if (Files.exists(destination) && JOptionPane.showConfirmDialog(component,
+        val replaceExisting = Files.exists(destination)
+        if (replaceExisting && JOptionPane.showConfirmDialog(component,
                 "Replace the existing CSV file?", "Export CSV", JOptionPane.YES_NO_OPTION,
                 JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION) return
         scope.launch {
             val result = try {
-                withContext(Dispatchers.IO) { Files.writeString(destination, exportCsv(entries)) }
+                withContext(Dispatchers.IO) { writeCsv(destination, entries, replaceExisting) }
                 Result.success(Unit)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -216,6 +241,23 @@ private class UsageView(private val project: Project) : Disposable {
     }
 
     override fun dispose() { scope.cancel() }
+}
+
+/** Stage exports before replacing a file and never replace a new file without consent. */
+internal fun writeCsv(destination: Path, entries: List<UsageEntry>, replaceExisting: Boolean) {
+    val target = destination.toAbsolutePath()
+    val temporary = Files.createTempFile(target.parent, ".hoosage-", ".csv.tmp")
+    try {
+        Files.writeString(temporary, exportCsv(entries))
+        if (replaceExisting) {
+            try { Files.move(temporary, target, ATOMIC_MOVE, REPLACE_EXISTING) }
+            catch (_: AtomicMoveNotSupportedException) { Files.move(temporary, target, REPLACE_EXISTING) }
+        } else {
+            // ATOMIC_MOVE may replace an existing target even without REPLACE_EXISTING.
+            // The regular move contract instead fails if another file appeared.
+            Files.move(temporary, target)
+        }
+    } finally { Files.deleteIfExists(temporary) }
 }
 
 private fun table(columns: Array<String>): JTable = JTable(object : DefaultTableModel(columns, 0) {
@@ -280,6 +322,7 @@ private fun section(title: String, table: JTable): JPanel = JPanel(BorderLayout(
 }
 
 private fun note(text: String): JTextArea = JTextArea(text).apply {
+    alignmentX = 0f
     isEditable = false
     isFocusable = false
     lineWrap = true
