@@ -9,13 +9,14 @@ import { startCollector } from "../src/core/collector";
 
 test("collector bounds plain and expanded gzip payloads without persisting rejected bodies", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hoosage-collector-bounds-"));
+  const token = "b".repeat(48);
   const collector = await startCollector({
     port: 0,
-    token: "synthetic-bounds",
+    token,
     projectId: "a",
     file: join(directory, "usage.jsonl"),
   });
-  const url = `http://127.0.0.1:${collector.port}/synthetic-bounds/v1/traces`;
+  const url = `http://127.0.0.1:${collector.port}/${token}/v1/traces`;
   try {
     const large = Buffer.alloc(8 * 1024 * 1024 + 1, 32);
     // The collector rejects the declared size before upload. A fetch upload

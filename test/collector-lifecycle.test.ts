@@ -33,9 +33,10 @@ test("collector shutdown drains a request already waiting for workspace routing"
   const released = new Promise<void>((resolve) => {
     releaseRoute = resolve;
   });
+  const token = "d".repeat(48);
   const collector = await startCollector({
     port: 0,
-    token: "synthetic-drain",
+    token,
     projectId: "host",
     file: "",
     route: async () => {
@@ -46,7 +47,7 @@ test("collector shutdown drains a request already waiting for workspace routing"
   });
   try {
     const response = fetch(
-      `http://127.0.0.1:${collector.port}/synthetic-drain/v1/traces`,
+      `http://127.0.0.1:${collector.port}/${token}/v1/traces`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
