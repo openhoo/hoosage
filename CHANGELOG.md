@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.2 (2026-10-13)
+
+### Bug Fixes
+
+- reconcile usage accounting and harden editor lifecycle (fb0c056)
+
 ## 0.14.1 (2026-10-07)
 
 ### Bug Fixes
