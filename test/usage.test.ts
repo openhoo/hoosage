@@ -10,6 +10,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+import vm from "node:vm";
+import { transformSync } from "esbuild";
 import { parseLine, parseSpan } from "../src/core/parser";
 import { UsageTailer } from "../src/core/tailer";
 import {
@@ -53,6 +56,34 @@ function span(extra: Record<string, unknown> = {}) {
     },
     ...extra,
   };
+}
+
+async function tailerWithOpenHook(beforeOpen: () => Promise<void>) {
+  const sourcePath = join(__dirname, "../src/core/tailer.ts");
+  const require = createRequire(sourcePath);
+  const filesystem = require("node:fs/promises");
+  const module = { exports: {} };
+  const code = transformSync(await readFile(sourcePath, "utf8"), {
+    loader: "ts",
+    format: "cjs",
+    target: "es2022",
+  }).code;
+  vm.runInNewContext(code, {
+    module,
+    exports: module.exports,
+    require: (id: string) =>
+      id === "node:fs/promises"
+        ? {
+            ...filesystem,
+            open: async (...args: unknown[]) => {
+              await beforeOpen();
+              return filesystem.open(...args);
+            },
+          }
+        : require(id),
+    Buffer,
+  });
+  return (module.exports as { UsageTailer: typeof UsageTailer }).UsageTailer;
 }
 
 test("counts only chat spans; does not sum agent totals, logs or metrics", () => {
@@ -244,6 +275,65 @@ test("incremental reader tolerates partial lines, malformed lines, retries and r
     );
     await reader.poll();
     assert.equal(reader.calls.size, 3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("capture replacement before open uses the replacement handle's metadata", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-open-replacement-"));
+  const path = join(dir, "usage.jsonl");
+  try {
+    const original = JSON.stringify(span()) + "\n";
+    const replacement =
+      JSON.stringify(span({ spanId: "c".repeat(16) })) +
+      "\n" +
+      JSON.stringify(span({ spanId: "d".repeat(16) })) +
+      "\n";
+    await writeFile(path, original);
+    let replaced = false;
+    const Tailer = await tailerWithOpenHook(async () => {
+      if (replaced) return;
+      replaced = true;
+      await rename(path, path + ".old");
+      await writeFile(path, replacement);
+    });
+    const reader = new Tailer(path, "project");
+    await reader.poll();
+    assert.equal(reader.calls.size, 2);
+    assert.equal(reader.readBytes, Buffer.byteLength(replacement));
+    assert.equal(reader.caughtUp, true);
+    assert.equal(reader.bufferedBytes, 0);
+    await reader.poll();
+    assert.equal(reader.calls.size, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("capture deletion before open clears warm usage instead of throwing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-open-deletion-"));
+  const path = join(dir, "usage.jsonl");
+  try {
+    await writeFile(path, JSON.stringify(span()) + "\n");
+    let deleteOnOpen = false;
+    const Tailer = await tailerWithOpenHook(async () => {
+      if (deleteOnOpen) await rm(path);
+    });
+    const reader = new Tailer(path, "project");
+    await reader.poll();
+    assert.equal(reader.calls.size, 1);
+    await appendFile(
+      path,
+      JSON.stringify(span({ spanId: "c".repeat(16) })) + "\n",
+    );
+    deleteOnOpen = true;
+    await reader.poll();
+    assert.equal(reader.calls.size, 0);
+    assert.equal(reader.readBytes, 0);
+    assert.equal(reader.bufferedBytes, 0);
+    assert.equal(reader.caughtUp, true);
+    assert.equal(reader.processedLines, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
