@@ -75,7 +75,7 @@ let activeBoundary: "start" | "end" = "end";
 const number = (n: number) =>
   new Intl.NumberFormat("en", { maximumFractionDigits: 0 }).format(n);
 const count = (n: number, label: string) =>
-  `${number(n)} ${label}${n === 1 ? "" : "s"}`;
+  `${number(n)} ${n === 1 ? label : label.endsWith("entry") ? `${label.slice(0, -1)}ies` : `${label}s`}`;
 const measuredCalls = (t: Totals) =>
   t.missingRequests ? (t.calls ? `${number(t.calls)}+` : "—") : number(t.calls);
 const callCount = (t: Totals) =>
@@ -169,6 +169,14 @@ function selectedBounds() {
   return { start: startOfRange(days, end), end, days };
 }
 
+function exportBlockedReason() {
+  if (data?.indexing)
+    return "Export is unavailable while saved usage is being indexed.";
+  if (data?.errors.length)
+    return "Some usage could not be read. Resolve the storage errors and refresh before exporting.";
+  return undefined;
+}
+
 function dateLabel(key: string, year = true) {
   const [y, m, d] = key.split("-").map(Number);
   return new Intl.DateTimeFormat("en", {
@@ -240,6 +248,7 @@ function render() {
   if (projectId !== "all" && !data.projects.some((p) => p.id === projectId))
     projectId = "all";
   const calls = selectedCalls();
+  const exportReason = exportBlockedReason();
   root.removeAttribute("aria-busy");
   root.innerHTML = `
     <aside class="rail"><a class="brand" href="#overview" data-page="overview" aria-label="hoosage overview">${mark}<span>hoosage<span class="brand-dot">.</span></span></a>
@@ -258,7 +267,7 @@ function render() {
     <div class="workspace">
     <main>${demo ? `<div class="demo-banner"><span><strong>Preview</strong> · Sample data</span><button data-action="exitDemo">Exit preview ${icon("arrow")}</button></div>` : ""}
     <div class="page-heading"><div><h1 tabindex="-1" data-focus="page-heading">${{ overview: "Copilot usage", projects: "Projects", activity: "Activity", about: "Usage details" }[page]}</h1></div><div class="heading-actions"><button class="icon-button expand-button" data-action="open" title="Open full dashboard" aria-label="Open full dashboard">${icon("expand")}</button><button class="icon-button" data-action="refresh" data-focus="refresh" title="Refresh usage" aria-label="Refresh usage">${icon("refresh")}</button></div></div>
-    ${page !== "about" ? `<div class="toolbar">${page === "projects" ? '<span class="toolbar-title">All projects</span>' : `<label class="project-picker">${icon("projects")}<span class="sr-only">Project</span><select id="project" data-focus="project" aria-label="Project"><option value="all">All projects</option>${data.projects.map((p) => `<option value="${h(p.id)}" ${projectId === p.id ? "selected" : ""}>${h(p.name)}</option>`).join("")}</select></label>`}<div class="toolbar-right">${dateControls(today)}<button class="button export" data-action="export" data-focus="export">${icon("download")}Export</button></div></div>` : ""}
+    ${page !== "about" ? `<div class="toolbar">${page === "projects" ? '<span class="toolbar-title">All projects</span>' : `<label class="project-picker">${icon("projects")}<span class="sr-only">Project</span><select id="project" data-focus="project" aria-label="Project"><option value="all">All projects</option>${data.projects.map((p) => `<option value="${h(p.id)}" ${projectId === p.id ? "selected" : ""}>${h(p.name)}</option>`).join("")}</select></label>`}<div class="toolbar-right">${dateControls(today)}<button class="button export" data-action="export" data-focus="export" ${exportReason ? `disabled aria-describedby="export-blocked" title="${h(exportReason)}"` : ""}>${icon("download")}Export</button>${exportReason ? `<span id="export-blocked" class="sr-only">${h(exportReason)}</span>` : ""}</div></div>` : ""}
     ${data.errors.map((error) => `<div class="notice" role="status">${icon("about")}${h(error)}</div>`).join("")}
     ${!demo && data.indexing && page !== "about" ? `<section class="onboarding" aria-busy="true">${icon("activity")}<span class="section-eyebrow">LOCAL USAGE</span><h2>Indexing saved usage…</h2><p>Reading hoosage's saved project records and local sessions. Totals will appear when the scan is complete.</p></section>` : page === "about" ? about() : page === "projects" ? projects(calls) : page === "activity" ? activity(calls) : overview(calls)}
 
@@ -295,15 +304,15 @@ function overview(calls: UsageCall[]) {
   const setupAction =
     data.status === "reload"
       ? action("Reload window", "reload", true)
-      : data.canStopTracking
+      : data.canStopTracking || data.status === "active"
         ? action("Stop tracking", "disable", true)
         : data.status === "waiting"
           ? action("Refresh usage", "refresh", true)
           : action("Enable Chat tracking once", "enable", true);
   if (allEmpty)
-    return `<section class="onboarding">${icon("activity")}<span class="section-eyebrow">LOCAL USAGE</span><h2>${data.status === "waiting" ? "No usage yet" : data.status === "reload" ? "Reload required" : data.status === "blocked" ? "Tracking unavailable" : "Tracking is off"}</h2><p>${h(data.statusDetail)}</p><div class="onboarding-actions">${setupAction}<button class="button" data-action="diagnose">Diagnose tracking</button><button class="button" data-action="demo">Preview ${icon("arrow")}</button></div></section><div class="coverage-note"><span>Tracking starts after setup and reload. <button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
+    return `<section class="onboarding">${icon("activity")}<span class="section-eyebrow">LOCAL USAGE</span><h2>${data.status === "waiting" || data.status === "active" ? "No usage yet" : data.status === "reload" ? "Reload required" : data.status === "blocked" ? "Tracking unavailable" : "Tracking is off"}</h2><p>${h(data.statusDetail)}</p><div class="onboarding-actions">${setupAction}<button class="button" data-action="diagnose">Diagnose tracking</button><button class="button" data-action="demo">Preview ${icon("arrow")}</button></div></section><div class="coverage-note"><span>Tracking starts after setup and reload. <button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
   return `<section class="stats" aria-label="Usage summary">
-    <article class="stat featured cost-stat"><div class="stat-label">Usage cost <span class="currency-tag">USD</span></div><div class="stat-number" title="${h(costDescription(price))}">${h(costLabel(price))}</div><div class="stat-foot">${price.unpricedCalls ? count(price.unpricedCalls, "unpriced entry") : price.estimatedCalls ? "Includes estimates" : price.reportedCalls ? "Reported by Copilot" : "No cost data"}</div></article>
+    <article class="stat featured cost-stat"><div class="stat-label">Usage cost <span class="currency-tag">USD</span></div><div class="stat-number" title="${h(costDescription(price))}">${h(costLabel(price))}</div><div class="stat-foot">${price.unpricedCalls ? count(price.unpricedCalls, "unpriced entry") : price.estimatedCalls ? "Includes estimates" : price.reportedCalls ? "Reported by Copilot" : price.includedCalls ? "Included in session total" : "No cost data"}</div></article>
     <article class="stat"><div class="stat-label">Tokens ${icon("bolt")}</div><div class="stat-number">${knownTokenLabel(calls, t.tokens, "total")}</div><div class="stat-foot">${t.missingUsage ? `${count(t.missingUsage, "entry")} missing token data` : "Input + output"}</div></article>
     <article class="stat"><div class="stat-label">Model calls ${icon("activity")}</div><div class="stat-number" title="${h(callCount(t))}">${measuredCalls(t)}</div><div class="stat-foot">${count(t.sessions, "session")}${t.missingRequests ? " · Partial count" : ""}</div></article>
     <article class="stat"><div class="stat-label">Input tokens ${icon("download")}</div><div class="stat-number">${knownTokenLabel(calls, t.input, "input")}</div><div class="stat-foot">${knownTokenLabel(calls, t.cacheRead, "cacheRead")} cached${calls.some((c) => c.cacheRead === undefined) ? " · partial" : ""}</div></article>
@@ -452,7 +461,7 @@ function about() {
     <section class="card about-card"><div class="about-card-top"><span class="about-card-icon">${icon("activity")}</span><span class="section-eyebrow">HISTORY</span></div><h2>Saved usage</h2><p>Live Chat collection starts after setup and reload. Earlier completed requests still stored by VS Code are imported, marked “Imported” and not double-counted once live collection starts for a project. Chats VS Code already deleted cannot be recovered. Existing local CLI history is read separately.</p><p>Stopping tracking keeps your history. To delete it, stop tracking, reload, then delete hoosage’s project storage.</p></section>
     <section class="card about-card"><div class="about-card-top"><span class="about-card-icon">${icon("arrow")}</span><span class="section-eyebrow">ATTRIBUTION</span></div><h2>Local sessions</h2><p>Completed CLI and JetBrains sessions discover projects from their recorded working directory, even if those projects were never opened in VS Code. Ambiguous locations stay unassigned.</p><p>Windows, WSL and container paths remain separate by default. To aggregate one known checkout across hosts, explicitly configure <strong>hoosage: Configure Shared Project Sync</strong> on each host with the same shared folder and group ID.</p></section>
   </div>
-  <section class="card pricing-details"><div class="about-section-heading"><span class="section-eyebrow">USAGE VALUE</span><h2>Costs in USD</h2></div><div class="pricing-key"><span><strong>Reported</strong> Copilot credits take priority; 1 credit = $0.01.</span><span><strong>≈ Estimated</strong> from the price table.</span><span><strong>+ Partial</strong> excludes unpriced usage.</span></div><p>Estimates use the <a href="${PRICING_SOURCE}">Copilot price table</a> from ${PRICING_DATE}, including cache rates and long-context tiers. These rates also apply to older calls. Missing cache details are assumed zero. Unknown models, incomplete token counts and CLI aggregates that could cross long-context tiers stay unpriced.</p><p>Usage value excludes subscription fees, allowances, discounts and taxes. It is not your bill.</p><p class="pricing-coverage">${h(costDescription(costs(selectedCalls())))}</p></section>
+  <section class="card pricing-details"><div class="about-section-heading"><span class="section-eyebrow">USAGE VALUE</span><h2>Costs in USD</h2></div><div class="pricing-key"><span><strong>Reported</strong> Copilot credits take priority; 1 credit = $0.01.</span><span><strong>≈ Estimated</strong> from the price table.</span><span><strong>+ Partial</strong> excludes unpriced usage.</span></div><p>Estimates use the <a href="${PRICING_SOURCE}">Copilot price table</a> from ${PRICING_DATE}, including cache rates and long-context tiers. These rates also apply to older calls. Missing cache details are assumed zero. Unknown models, incomplete token counts and CLI aggregates that could cross long-context tiers stay unpriced.</p><p>CLI token increments covered by a reported session total are marked “Included”. Their cost is counted once in that reported total; it is not estimated again for each increment.</p><p>Usage value excludes subscription fees, allowances, discounts and taxes. It is not your bill.</p><p class="pricing-coverage">${h(costDescription(costs(selectedCalls())))}</p></section>
   <section class="card connection-card"><div><div class="about-section-heading"><span class="section-eyebrow">CONTROL</span><h2>Tracking</h2></div><p>${demo ? "Preview · Sample data" : h(data!.statusDetail)}</p>${data!.skippedLines ? `<p>${count(data!.skippedLines, "invalid record")} skipped.</p>` : ""}<p>Chat setup applies to all trusted VS Code projects in this profile. Local CLI and JetBrains projects are discovered without setup. Stop tracking before uninstalling to restore the previous Copilot settings.</p></div><div class="connection-actions">${demo ? action("Exit preview", "exitDemo") : data!.status === "reload" ? action("Reload window", "reload", true) : data!.canStopTracking || data!.status === "active" || data!.status === "waiting" ? action("Stop tracking", "disable") : action("Enable Chat tracking once", "enable", true)}<button class="button" data-action="diagnose">Diagnose tracking</button><button class="button" data-action="settings">Settings</button></div></section>`;
 }
 
@@ -680,8 +689,14 @@ root.addEventListener("click", (event) => {
   }
   const action = button.dataset.action;
   if (action === "moreSessions") {
+    const firstNewSession = visibleSessions;
     visibleSessions += 100;
     render();
+    const sessions = root.querySelectorAll<HTMLElement>(".session-toggle");
+    sessions[firstNewSession]?.focus();
+    announce(
+      `${number(sessions.length)} of ${number(groupSessions(selectedCalls()).length)} sessions shown.`,
+    );
     return;
   }
   if (action === "demo") {
@@ -702,6 +717,11 @@ root.addEventListener("click", (event) => {
   if (action === "export") {
     if (demo) {
       announce("Exit preview to export usage.");
+      return;
+    }
+    const exportReason = exportBlockedReason();
+    if (exportReason) {
+      announce(exportReason);
       return;
     }
     send("export", {

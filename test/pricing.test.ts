@@ -4,6 +4,7 @@ import {
   callCost,
   costs,
   costLabel,
+  costDescription,
   formatUsd,
   PRICING_DATE,
 } from "../src/core/pricing";
@@ -203,4 +204,50 @@ test("CSV exports cost provenance and leaves unavailable amounts empty", () => {
   assert.ok(csv.includes('"1","reported"'));
   assert.ok(csv.includes(`"2.955","estimated","","${PRICING_DATE}"`));
   assert.ok(csv.includes('"","unavailable","No verified model price"'));
+});
+
+test("session-covered unknown costs stay unmeasured and are excluded from summed prices", () => {
+  const covered = {
+    ...call({ source: "cli", requests: 2 }),
+    costIncludedInSessionTotal: true as const,
+  };
+  assert.equal(covered.nanoAiu, undefined);
+  assert.deepEqual(callCost(covered), {
+    source: "included",
+    reason: "Included in reported session total",
+  });
+  const onlyCovered = costs([covered]);
+  assert.equal(onlyCovered.usd, undefined);
+  assert.equal(onlyCovered.includedCalls, 1);
+  assert.equal(onlyCovered.unpricedCalls, 0);
+  assert.equal(onlyCovered.estimatedCalls, 0);
+  assert.equal(costLabel(onlyCovered), "Included");
+  assert.ok(
+    costDescription(onlyCovered).includes(
+      "1 included in reported session totals",
+    ),
+  );
+  const total = call({
+    source: "cli",
+    nanoAiu: 150_000_000_000,
+    requests: 0,
+    input: 0,
+    output: 0,
+  });
+  const mixed = costs([covered, total]);
+  assert.equal(mixed.usd, 1.5);
+  assert.equal(mixed.includedCalls, 1);
+  assert.equal(mixed.reportedCalls, 1);
+  assert.equal(costLabel(mixed), "$1.50");
+  assert.equal(costLabel(costs([covered, call({ model: "unknown" })])), "—");
+  assert.equal(
+    callCost({ ...covered, source: "chat-history" }).source,
+    "estimated",
+    "only CLI session costs use the marker",
+  );
+  assert.equal(
+    callCost({ ...covered, nanoAiu: 0 }).source,
+    "reported",
+    "an explicit measured cost still wins",
+  );
 });

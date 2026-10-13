@@ -92,7 +92,7 @@ function modelKey(model: string): string {
 
 export interface CallCost {
   usd?: number;
-  source: "reported" | "estimated" | "unavailable";
+  source: "reported" | "estimated" | "unavailable" | "included";
   assumedCache?: boolean;
   reason?: string;
 }
@@ -104,6 +104,11 @@ export function callCost(call: UsageCall): CallCost {
   // VS Code converts nano-AIU to AI credits by /1e9; 1 credit = USD 0.01.
   if (validCount(call.nanoAiu))
     return { usd: call.nanoAiu / 100_000_000_000, source: "reported" };
+  if (
+    call.costIncludedInSessionTotal === true &&
+    (call.source === "cli" || call.source === "jetbrains")
+  )
+    return { source: "included", reason: "Included in reported session total" };
   const key = modelKey(call.model);
   const base = Object.hasOwn(rates, key) ? rates[key] : undefined;
   if (
@@ -151,6 +156,7 @@ export interface CostSummary {
   reportedCalls: number;
   estimatedCalls: number;
   unpricedCalls: number;
+  includedCalls: number;
   assumedCacheCalls: number;
 }
 
@@ -161,11 +167,13 @@ export function costs(calls: UsageCall[]): CostSummary {
     reportedCalls: 0,
     estimatedCalls: 0,
     unpricedCalls: 0,
+    includedCalls: 0,
     assumedCacheCalls: 0,
   };
   for (const call of calls) {
     const cost = callCost(call);
-    if (cost.usd === undefined) result.unpricedCalls++;
+    if (cost.source === "included") result.includedCalls++;
+    else if (cost.usd === undefined) result.unpricedCalls++;
     else if (cost.source === "reported") {
       result.reportedUsd += cost.usd;
       result.reportedCalls++;
@@ -192,13 +200,19 @@ export function formatUsd(value: number | undefined): string {
 }
 
 export function costLabel(cost: CostSummary): string {
-  if (cost.usd === undefined) return "—";
+  if (cost.usd === undefined)
+    return cost.includedCalls > 0 && cost.unpricedCalls === 0
+      ? "Included"
+      : "—";
   return `${cost.estimatedCalls ? "≈" : ""}${formatUsd(cost.usd)}${cost.unpricedCalls ? "+" : ""}`;
 }
 
 export function costDescription(cost: CostSummary): string {
   return (
     `Usage records: ${cost.reportedCalls} reported · ${cost.estimatedCalls} estimated · ${cost.unpricedCalls} unpriced` +
+    (cost.includedCalls
+      ? ` · ${cost.includedCalls} included in reported session totals`
+      : "") +
     (cost.assumedCacheCalls
       ? ` · Cache detail missing for ${cost.assumedCacheCalls} records`
       : "")

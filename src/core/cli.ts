@@ -2,20 +2,16 @@ import { createHash } from "node:crypto";
 import { open, readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
-import {
-  cacheFile,
-  readCache,
-  writeCache,
-  type ScanCache,
-} from "./scan-cache";
-import type { UsageCall } from "./types";
+import { cacheFile, readCache, writeCache, type ScanCache } from "./scan-cache";
+import { wslSessionSourceId } from "./path-identity";
+import { validateCacheSubsets, type UsageCall } from "./types";
 
 const MAX_LINE = 2 * 1024 * 1024;
 const BATCH = 4 * 1024 * 1024;
 const MAX_SKEW = 24 * 60 * 60 * 1000;
 const EMPTY = Buffer.alloc(0);
 /** Bump when the cached reader state changes shape. */
-const CACHE_FORMAT = 2;
+const CACHE_FORMAT = 8;
 const SAVE_INTERVAL_MS = 30_000;
 
 /** Attribution bucket for CLI sessions whose cwd matches no known project. */
@@ -45,6 +41,8 @@ interface ModelSnapshot {
   cacheWrite?: number;
   requests?: number;
   nanoAiu?: number;
+  /** Last reliable cumulative cost, including snapshots with unknown delta. */
+  observedNanoAiu?: number;
 }
 
 interface FileState {
@@ -54,12 +52,16 @@ interface FileState {
   pending: Buffer;
   dropping: boolean;
   cwd?: string;
+  /** An explicit event cwd (including invalid/null) overrides workspace.yaml. */
+  cwdExplicit: boolean;
   /** Event ordinal within this file; disambiguates events lacking an id. */
   seq: number;
   emitted: Set<string>;
   /** Usage event IDs already applied to cumulative counters. */
   seenEvents: Set<string>;
   baselines: Map<string, ModelSnapshot>;
+  /** Model resets already observed while this session total was unchanged. */
+  modelResetTotals: Map<string, number>;
   /** workspace.yaml probe: undefined until read, null when absent/unreadable. */
   workspace?: { clientName?: string; cwd?: string } | null;
   /** Latest model the session named; receives session-level cost. */
@@ -70,39 +72,75 @@ interface FileState {
   totalOffset: number;
   /** Session-level nano-AIU already emitted as entries. */
   accounted: number;
+  /** Reliable model-cost deltas accumulated independently of checkpoints. */
+  modelCostTotal: number;
+  /** Session cost outside model counters at a synchronized shutdown. */
+  modelCostOffset: number;
 }
 const freshState = (): FileState => ({
   offset: 0,
   pending: EMPTY,
   dropping: false,
+  cwdExplicit: false,
   seq: 0,
   emitted: new Set(),
   seenEvents: new Set(),
   baselines: new Map(),
+  modelResetTotals: new Map(),
   totalOffset: 0,
   accounted: 0,
+  modelCostTotal: 0,
+  modelCostOffset: 0,
 });
 
-/** Minimal field extraction from workspace.yaml — a flat CLI-written file.
- * `client_name` and `cwd` are matched at any indentation (the plugin may nest
- * them under a metadata block); everything else is ignored. Quoting is
- * tolerated; a `#` starts a comment only after whitespace, so paths
- * containing `#` survive. */
+/** Read the CLI's small YAML subset, including plugin metadata nesting. Do
+ * not select an arbitrary first value when attribution fields conflict. */
 function parseWorkspace(content: string): {
   clientName?: string;
   cwd?: string;
-} {
-  const field = (name: string): string | undefined => {
-    const match = content.match(
-      new RegExp(
-        `^[ \\t]*${name}:[ \\t]*(?:["']([^"'\\n]*)["']|([^\\s#][^\\n]*?))(?:[ \\t]+#[^\\n]*)?[ \\t]*$`,
-        "m",
-      ),
-    );
-    const value = match?.[1] ?? match?.[2];
-    return value?.trim() || undefined;
+} | null {
+  const fields = new Map<string, string>();
+  for (const line of content.split(/\r?\n/)) {
+    const match =
+      /^[ \t]*("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[A-Za-z_][A-Za-z0-9_-]*)[ \t]*:[ \t]*(.*)$/.exec(
+        line,
+      );
+    if (!match) continue;
+    const key = workspaceScalar(match[1]!);
+    if (key !== "cwd" && key !== "client_name") continue;
+    const value = workspaceScalar(match[2]!);
+    if (value === undefined || (fields.has(key) && fields.get(key) !== value))
+      return null;
+    fields.set(key, value);
+  }
+  if (!fields.size) return null;
+  return {
+    clientName: fields.get("client_name") || undefined,
+    cwd: fields.get("cwd") || undefined,
   };
-  return { clientName: field("client_name"), cwd: field("cwd") };
+}
+
+function workspaceScalar(value: string): string | undefined {
+  let parsed: string;
+  if (value.startsWith('"')) {
+    const match = /^("(?:[^"\\]|\\.)*")(?:[ \t]+#.*)?[ \t]*$/.exec(value);
+    if (!match) return undefined;
+    try {
+      parsed = JSON.parse(match[1]!) as string;
+    } catch {
+      return undefined;
+    }
+  } else if (value.startsWith("'")) {
+    const match = /^'((?:[^']|'')*)'(?:[ \t]+#.*)?[ \t]*$/.exec(value);
+    if (!match) return undefined;
+    parsed = match[1]!.replace(/''/g, "'");
+  } else {
+    // A '#' in a plain path is literal unless whitespace precedes it.
+    parsed = value.replace(/[ \t]+#.*$/, "").trim();
+  }
+  return parsed.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(parsed)
+    ? parsed
+    : undefined;
 }
 
 const num = (value: unknown): number | undefined =>
@@ -147,12 +185,13 @@ const text = (value: unknown): string | undefined =>
 type CachedCall = Omit<
   UsageCall,
   "projectId" | "sessionId" | "source" | "failed"
-> & { cwd?: string };
+> & { cwd?: string; cwdExplicit?: boolean };
 
 /** Validates one cached file entry; undefined means "read the file again". */
 function restoreFile(
   sessionId: string,
   value: unknown,
+  sourceId?: string,
 ): { st: FileState; calls: CachedCall[] } | undefined {
   const saved = record(value);
   if (
@@ -175,6 +214,7 @@ function restoreFile(
         : undefined,
     dropping: saved.dropping === true,
     cwd: text(saved.cwd),
+    cwdExplicit: saved.cwdExplicit === true,
     seq,
     workspace: workspace
       ? { clientName: text(workspace.clientName), cwd: text(workspace.cwd) }
@@ -183,6 +223,8 @@ function restoreFile(
     totalRaw: num(saved.totalRaw),
     totalOffset: num(saved.totalOffset) ?? 0,
     accounted: num(saved.accounted) ?? 0,
+    modelCostTotal: num(saved.modelCostTotal) ?? 0,
+    modelCostOffset: num(saved.modelCostOffset) ?? 0,
   };
   for (const [model, raw] of Object.entries(record(saved.baselines) ?? {})) {
     const baseline = record(raw);
@@ -194,7 +236,15 @@ function restoreFile(
       cacheWrite: num(baseline.cacheWrite),
       requests: num(baseline.requests),
       nanoAiu: num(baseline.nanoAiu),
+      observedNanoAiu: num(baseline.observedNanoAiu),
     });
+  }
+  for (const [model, raw] of Object.entries(
+    record(saved.modelResetTotals) ?? {},
+  )) {
+    const total = num(raw);
+    if (!model || total === undefined) return undefined;
+    st.modelResetTotals.set(model, total);
   }
   if (
     !Array.isArray(saved.seenEvents) ||
@@ -214,7 +264,9 @@ function restoreFile(
       !call ||
       typeof id !== "string" ||
       id.length > 2048 ||
-      !id.startsWith(`cli:${sessionId}:`) ||
+      !id.startsWith(
+        sourceId ? `wsl:${sourceId}:cli:${sessionId}:` : `cli:${sessionId}:`,
+      ) ||
       timestamp === undefined ||
       !model
     )
@@ -229,7 +281,11 @@ function restoreFile(
       cacheWrite: num(call.cacheWrite),
       requests: num(call.requests),
       nanoAiu: num(call.nanoAiu),
+      ...(call.costIncludedInSessionTotal === true
+        ? { costIncludedInSessionTotal: true as const }
+        : {}),
       cwd: text(call.cwd),
+      cwdExplicit: call.cwdExplicit === true,
     });
     st.emitted.add(id);
   }
@@ -260,9 +316,12 @@ export class CliUsageScanner {
   caughtUp = true;
   detected = false;
   private readonly root: string;
+  private readonly sourceId?: string;
   private readonly files = new Map<string, FileState>();
   /** Local-only cwd for reattributing a session when new workspaces appear. */
   private readonly callCwds = new Map<string, string>();
+  /** Intervals with explicit cwd must never borrow a later resume's cwd. */
+  private readonly callCwdExplicit = new Set<string>();
   private busy = false;
   private readonly cacheFile?: string;
   private restored = false;
@@ -272,6 +331,7 @@ export class CliUsageScanner {
   constructor(
     root?: string,
     private readonly cache?: ScanCache,
+    sourceId?: string,
   ) {
     this.root =
       root ??
@@ -279,6 +339,12 @@ export class CliUsageScanner {
         process.env.COPILOT_HOME || join(homedir(), ".copilot"),
         "session-state",
       );
+    if (sourceId !== undefined && !/^[a-f0-9]{24}$/.test(sourceId))
+      throw new Error("Invalid CLI source identity.");
+    const distro =
+      process.platform === "linux" ? process.env.WSL_DISTRO_NAME : undefined;
+    this.sourceId =
+      sourceId ?? (distro ? wslSessionSourceId(distro, this.root) : undefined);
     if (cache) this.cacheFile = cacheFile(cache, "cli", this.root);
   }
 
@@ -297,7 +363,9 @@ export class CliUsageScanner {
       });
       this.detected = rootInfo?.isDirectory() === true;
       if (!this.detected) {
+        for (const sessionId of [...this.files.keys()]) this.forget(sessionId);
         this.caughtUp = true;
+        if (this.dirty) await this.persist();
         return;
       }
       const entries = await readdir(this.root, { withFileTypes: true });
@@ -356,6 +424,7 @@ export class CliUsageScanner {
     for (const id of st.emitted) {
       this.calls.delete(id);
       this.callCwds.delete(id);
+      this.callCwdExplicit.delete(id);
     }
     this.files.delete(sessionId);
     this.dirty = true;
@@ -375,22 +444,23 @@ export class CliUsageScanner {
     if (!payload || !files) return;
     this.skippedLines = num(payload.skippedLines) ?? 0;
     for (const [sessionId, value] of Object.entries(files)) {
-      const restored = restoreFile(sessionId, value);
+      const restored = restoreFile(sessionId, value, this.sourceId);
       if (!restored) continue;
       const { st, calls } = restored;
       const source =
         st.workspace?.clientName === JETBRAINS_CLIENT ? "jetbrains" : "cli";
-      for (const { cwd, ...call } of calls) {
+      for (const { cwd, cwdExplicit, ...call } of calls) {
         // Project attribution is resolved again at the end of each poll.
         this.calls.set(call.id, {
           ...call,
           projectId:
             source === "jetbrains" ? JETBRAINS_PROJECT_ID : CLI_PROJECT_ID,
-          sessionId,
+          sessionId: this.sessionIdentity(sessionId),
           source,
           failed: false,
         });
         if (cwd) this.callCwds.set(call.id, cwd);
+        if (cwdExplicit) this.callCwdExplicit.add(call.id);
       }
       this.files.set(sessionId, st);
     }
@@ -408,12 +478,16 @@ export class CliUsageScanner {
         seq: st.seq,
         seenEvents: [...st.seenEvents],
         cwd: st.cwd,
+        cwdExplicit: st.cwdExplicit,
         workspace: st.workspace ?? undefined,
         model: st.model,
         totalRaw: st.totalRaw,
         totalOffset: st.totalOffset,
         accounted: st.accounted,
+        modelCostTotal: st.modelCostTotal,
+        modelCostOffset: st.modelCostOffset,
         baselines: Object.fromEntries(st.baselines),
+        modelResetTotals: Object.fromEntries(st.modelResetTotals),
         calls: [...st.emitted].flatMap((id) => {
           const call = this.calls.get(id);
           return call
@@ -428,7 +502,9 @@ export class CliUsageScanner {
                   cacheWrite: call.cacheWrite,
                   requests: call.requests,
                   nanoAiu: call.nanoAiu,
+                  costIncludedInSessionTotal: call.costIncludedInSessionTotal,
                   cwd: this.callCwds.get(id),
+                  cwdExplicit: this.callCwdExplicit.has(id),
                 },
               ]
             : [];
@@ -456,10 +532,16 @@ export class CliUsageScanner {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     });
-    if (!file) return true;
+    if (!file) {
+      this.forget(sessionId);
+      return true;
+    }
     try {
       const info = await file.stat();
-      if (!info.isFile()) return true;
+      if (!info.isFile()) {
+        this.forget(sessionId);
+        return true;
+      }
       let st = this.files.get(sessionId) ?? freshState();
       if (st.inode !== info.ino || info.size < st.offset) {
         // Rotation or truncation: emitted calls and cumulative baselines
@@ -467,6 +549,7 @@ export class CliUsageScanner {
         for (const id of st.emitted) {
           this.calls.delete(id);
           this.callCwds.delete(id);
+          this.callCwdExplicit.delete(id);
         }
         st = freshState();
         this.dirty = true;
@@ -487,18 +570,28 @@ export class CliUsageScanner {
         st.workspace = content === undefined ? null : parseWorkspace(content);
         if (st.workspace) {
           this.dirty = true;
-          if (st.cwd === undefined && st.workspace.cwd)
+          if (!st.cwdExplicit && st.cwd === undefined && st.workspace.cwd)
             st.cwd = st.workspace.cwd;
           // Re-tag calls emitted before the file appeared.
           for (const id of st.emitted) {
             const call = this.calls.get(id);
             if (!call) continue;
-            if (!this.callCwds.has(id) && st.cwd) this.callCwds.set(id, st.cwd);
+            if (
+              !this.callCwds.has(id) &&
+              !this.callCwdExplicit.has(id) &&
+              st.workspace.cwd
+            )
+              this.callCwds.set(id, st.workspace.cwd);
             call.source =
               st.workspace.clientName === JETBRAINS_CLIENT
                 ? "jetbrains"
                 : "cli";
-            call.projectId = this.projectIdFor(st, resolve);
+            // The final pass resolves each interval's own cwd. An interval
+            // whose cwd was explicitly cleared remains in its source bucket.
+            call.projectId =
+              call.source === "jetbrains"
+                ? JETBRAINS_PROJECT_ID
+                : CLI_PROJECT_ID;
           }
         }
       }
@@ -569,9 +662,10 @@ export class CliUsageScanner {
     }
     st.seq++;
     if (event.type === "session.start" || event.type === "session.resume") {
-      const cwd = record(record(event.data)?.context)?.cwd;
-      if (typeof cwd === "string" && cwd !== st.cwd) {
-        st.cwd = cwd;
+      const context = record(record(event.data)?.context);
+      if (context && Object.hasOwn(context, "cwd")) {
+        st.cwdExplicit = true;
+        st.cwd = text(context.cwd);
       }
       return;
     }
@@ -626,8 +720,12 @@ export class CliUsageScanner {
     }
     const emitted = new Map<string, UsageCall>();
     const metrics = record(data?.modelMetrics) ?? {};
+    let synchronizedModelCost = Object.keys(metrics).length > 0;
     for (const [model, raw] of Object.entries(metrics)) {
-      if (!model) continue;
+      if (!model) {
+        synchronizedModelCost = false;
+        continue;
+      }
       const entry = record(raw);
       const usage = record(entry?.usage) ?? {};
       const snapshot: ModelSnapshot = {
@@ -638,8 +736,11 @@ export class CliUsageScanner {
         requests: num(record(entry?.requests)?.count),
         nanoAiu: num(entry?.totalNanoAiu),
       };
-      if (Object.values(snapshot).every((value) => value === undefined))
+      validateCacheSubsets(snapshot);
+      if (Object.values(snapshot).every((value) => value === undefined)) {
+        synchronizedModelCost = false;
         continue;
+      }
       let baseline = st.baselines.get(model);
       // CLI compaction/resume can restart model counters without a session
       // cost counter. A decreasing request counter (or both token counters)
@@ -650,8 +751,15 @@ export class CliUsageScanner {
         decreased(snapshot.requests, baseline?.requests) ||
         (decreased(snapshot.input, baseline?.input) &&
           decreased(snapshot.output, baseline?.output))
-      )
+      ) {
+        if (st.totalRaw !== undefined)
+          st.modelResetTotals.set(model, st.totalRaw);
         baseline = undefined;
+      }
+      const observedCost = baseline?.observedNanoAiu ?? baseline?.nanoAiu;
+      const costDecreased = decreased(snapshot.nanoAiu, observedCost);
+      if (snapshot.nanoAiu === undefined || costDecreased)
+        synchronizedModelCost = false;
       const delta: ModelSnapshot = {
         input: deltaCount(snapshot.input, baseline?.input),
         output: deltaCount(snapshot.output, baseline?.output),
@@ -660,14 +768,25 @@ export class CliUsageScanner {
         requests: deltaCount(snapshot.requests, baseline?.requests),
         nanoAiu: deltaReportedCost(snapshot.nanoAiu, baseline),
       };
+      validateCacheSubsets(delta);
       st.baselines.set(model, {
         input: snapshot.input ?? baseline?.input,
         output: snapshot.output ?? baseline?.output,
         cacheRead: snapshot.cacheRead ?? baseline?.cacheRead,
         cacheWrite: snapshot.cacheWrite ?? baseline?.cacheWrite,
         requests: snapshot.requests ?? baseline?.requests,
-        nanoAiu: snapshot.nanoAiu,
+        // A falling cost without a token/request reset is unreliable, not a
+        // new baseline. A genuinely missing field still breaks known coverage.
+        nanoAiu: costDecreased ? baseline?.nanoAiu : snapshot.nanoAiu,
+        observedNanoAiu:
+          snapshot.nanoAiu === undefined || costDecreased
+            ? observedCost
+            : snapshot.nanoAiu,
       });
+      // A newly known cumulative counter establishes covered model cost even
+      // when its individual interval cannot be priced after a missing field.
+      if (snapshot.nanoAiu !== undefined && !costDecreased)
+        st.modelCostTotal += snapshot.nanoAiu - (observedCost ?? 0);
       if (
         !delta.input &&
         !delta.output &&
@@ -683,6 +802,15 @@ export class CliUsageScanner {
         // it and never fall back to a token estimate on top of it.
         nanoAiu = Math.min(nanoAiu ?? 0, unassigned);
         unassigned -= nanoAiu;
+      } else if (nanoAiu !== undefined) {
+        // A checkpoint can cover model costs whose counters arrive later in
+        // a shutdown that omits its session total. Only the cumulative model
+        // cost beyond already emitted coverage is an additional charge.
+        nanoAiu = Math.min(
+          nanoAiu,
+          Math.max(0, st.modelCostTotal + st.modelCostOffset - st.accounted),
+        );
+        st.accounted += nanoAiu;
       }
       emitted.set(
         model,
@@ -699,6 +827,15 @@ export class CliUsageScanner {
         }),
       );
     }
+    if (reportedTotal !== undefined && synchronizedModelCost)
+      // A simultaneous model snapshot establishes the covered boundary.
+      // Any residual session cost is outside those counters, so future model
+      // increments must not be suppressed by it. Total-only checkpoints keep
+      // their coverage available for model counters that arrive later.
+      st.modelCostOffset = Math.max(
+        st.modelCostOffset,
+        st.accounted - st.modelCostTotal,
+      );
     if (!unassigned) return;
     const model = st.model ?? "unknown";
     const call = emitted.get(model);
@@ -720,8 +857,13 @@ export class CliUsageScanner {
     event: Record<string, unknown>,
     st: FileState,
   ): { timestamp: number; eventId: string } | undefined {
-    const timestamp = Date.parse(event.timestamp as string);
-    if (!Number.isFinite(timestamp) || timestamp > Date.now() + MAX_SKEW) {
+    const timestamp =
+      typeof event.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
+    if (
+      !Number.isFinite(timestamp) ||
+      timestamp < 0 ||
+      timestamp > Date.now() + MAX_SKEW
+    ) {
       this.skippedLines++;
       return undefined;
     }
@@ -744,9 +886,21 @@ export class CliUsageScanner {
    * total. A drop means the CLI restarted its counters (older versions do on
    * resume): earlier runs stay counted and per-model baselines restart. */
   private sessionTotal(st: FileState, reported: number): number {
+    // Newly available authoritative totals cover earlier token-only intervals.
+    // Keep their individual costs unknown; suppress only their fallback estimate.
+    for (const id of st.emitted) {
+      const call = this.calls.get(id);
+      if (call && call.nanoAiu === undefined)
+        call.costIncludedInSessionTotal = true;
+    }
     if (st.totalRaw !== undefined && reported < st.totalRaw) {
       st.totalOffset += st.totalRaw;
-      st.baselines.clear();
+      // Model counters may have restarted before the session total did.
+      // Preserve those new-run baselines instead of counting them twice.
+      for (const model of st.baselines.keys())
+        if (st.modelResetTotals.get(model) !== st.totalRaw)
+          st.baselines.delete(model);
+      st.modelResetTotals.clear();
     }
     st.totalRaw = reported;
     return st.totalOffset + reported;
@@ -760,16 +914,22 @@ export class CliUsageScanner {
   ): UsageCall {
     const full: UsageCall = {
       ...call,
+      id: this.sourceId ? `wsl:${this.sourceId}:${call.id}` : call.id,
       projectId: this.projectIdFor(st, resolve),
-      sessionId,
+      sessionId: this.sessionIdentity(sessionId),
       source:
         st.workspace?.clientName === JETBRAINS_CLIENT ? "jetbrains" : "cli",
       failed: false,
     };
     this.calls.set(full.id, full);
     if (st.cwd) this.callCwds.set(full.id, st.cwd);
+    if (st.cwdExplicit) this.callCwdExplicit.add(full.id);
     st.emitted.add(full.id);
     return full;
+  }
+
+  private sessionIdentity(sessionId: string): string {
+    return this.sourceId ? `wsl:${this.sourceId}:${sessionId}` : sessionId;
   }
 
   /** Use the current project index; stored intervals are rechecked each poll. */

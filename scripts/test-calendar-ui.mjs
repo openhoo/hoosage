@@ -39,7 +39,7 @@ const routes = new Map([
     "/",
     [
       "text/html",
-      '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body class="vscode-dark"><div id="app"></div><script src="/webview.js"></script></body></html>',
+      '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'self\'; script-src \'nonce-hoosage-test\'; img-src \'self\' data:; font-src \'self\';"><link rel="stylesheet" href="/app.css"></head><body class="vscode-dark"><div id="app" aria-busy="true"><p class="loading">Loading usage…</p></div><script nonce="hoosage-test" src="/webview.js"></script></body></html>',
     ],
   ],
   ["/app.css", ["text/css", "media/app.css"]],
@@ -98,9 +98,20 @@ try {
   );
   let nextId = 0;
   const pending = new Map();
+  const browserErrors = [];
+  const policyViolations = [];
   socket.addEventListener("message", ({ data }) => {
     const message = JSON.parse(data);
-    if (!message.id) return;
+    if (!message.id) {
+      if (message.method === "Runtime.exceptionThrown")
+        browserErrors.push(message.params.exceptionDetails);
+      if (
+        message.method === "Log.entryAdded" &&
+        message.params.entry.source === "security"
+      )
+        policyViolations.push(message.params.entry.text);
+      return;
+    }
     const request = pending.get(message.id);
     pending.delete(message.id);
     message.error
@@ -175,6 +186,7 @@ try {
   };
   await send("Runtime.enable");
   await send("Page.enable");
+  await send("Log.enable");
   for (const width of [1408, 768, 390, 320]) {
     await send("Emulation.setDeviceMetricsOverride", {
       width,
@@ -221,6 +233,63 @@ try {
       await evaluate("document.activeElement.dataset.calendarDay"),
       focusedDay,
       `${width}px: arrow key moves date focus`,
+    );
+    const beforeMonth = await evaluate(
+      "document.activeElement.dataset.calendarDay.slice(0, 7)",
+    );
+    await key("PageUp");
+    assert.notEqual(
+      await evaluate("document.activeElement.dataset.calendarDay.slice(0, 7)"),
+      beforeMonth,
+      `${width}px: Page Up moves to a previous month`,
+    );
+    await key("Home");
+    assert.equal(
+      await evaluate(
+        'new Date(document.activeElement.dataset.calendarDay + "T12:00:00").getDay()',
+      ),
+      1,
+      `${width}px: Home moves to Monday`,
+    );
+    await key("End");
+    assert.equal(
+      await evaluate(
+        'new Date(document.activeElement.dataset.calendarDay + "T12:00:00").getDay()',
+      ),
+      0,
+      `${width}px: End moves to Sunday`,
+    );
+    const weekEnd = await evaluate(
+      "document.activeElement.dataset.calendarDay",
+    );
+    await key("ArrowUp");
+    assert.notEqual(
+      await evaluate("document.activeElement.dataset.calendarDay"),
+      weekEnd,
+      `${width}px: Arrow Up moves to the previous week`,
+    );
+    await key("ArrowDown");
+    assert.equal(
+      await evaluate("document.activeElement.dataset.calendarDay"),
+      weekEnd,
+      `${width}px: Arrow Down restores the same weekday`,
+    );
+    const beforeYear = await evaluate(
+      "document.activeElement.dataset.calendarDay.slice(0, 4)",
+    );
+    await key("PageUp", 8);
+    assert.equal(
+      await evaluate(
+        "Number(document.activeElement.dataset.calendarDay.slice(0, 4))",
+      ),
+      Number(beforeYear) - 1,
+      `${width}px: Shift Page Up moves to the previous year`,
+    );
+    await key("PageDown", 8);
+    assert.equal(
+      await evaluate("document.activeElement.dataset.calendarDay.slice(0, 4)"),
+      beforeYear,
+      `${width}px: Shift Page Down restores the year`,
     );
     await key("Escape");
     assert.equal(
@@ -348,10 +417,15 @@ try {
   }
   // Real-host fixture: snapshots and status updates must not steal keyboard focus.
   await send("Page.addScriptToEvaluateOnNewDocument", {
-    source: `window.acquireVsCodeApi = () => ({ getState: () => ({}), setState: () => {}, postMessage: message => { window.hostMessages = [...(window.hostMessages || []), message]; } });`,
+    source: `window.acquireVsCodeApi = () => ({ getState: () => window.fixtureState || {}, setState: state => { window.savedState = state; }, postMessage: message => { window.hostMessages = [...(window.hostMessages || []), message]; } });`,
   });
   await send("Page.navigate", { url });
   await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(
+    await evaluate('document.querySelector("#app").getAttribute("aria-busy")'),
+    "true",
+    "host-backed dashboard exposes a loading state before the first snapshot",
+  );
   const now = Date.now();
   const fixture = {
     projects: [
@@ -396,6 +470,82 @@ try {
     ),
     "incomplete chart buckets reach the accessibility tree",
   );
+  await snapshot({
+    ...fixture,
+    calls: [0, 1].map((i) => ({
+      ...fixture.calls[0],
+      id: `synthetic-unknown-${i}`,
+      source: "chat-history",
+    })),
+  });
+  assert.deepEqual(
+    await evaluate(
+      '[...document.querySelectorAll(".stat-number")].slice(1).map(node => node.textContent)',
+    ),
+    ["—", "—", "—", "—"],
+    "unknown imported token and request totals remain unknown in every summary",
+  );
+  assert.equal(
+    await evaluate('document.querySelectorAll(".stat-number")[2].title'),
+    "2 entries with unknown call count",
+    "unknown aggregate count has a clear plural label",
+  );
+  await screenshot("320-unknown");
+  await snapshot({
+    ...fixture,
+    projects: [
+      ...fixture.projects,
+      {
+        ...fixture.projects[0],
+        id: "synthetic-other",
+        name: "Other synthetic project",
+      },
+    ],
+    calls: [
+      ...fixture.calls,
+      {
+        ...fixture.calls[0],
+        id: "synthetic-other-call",
+        projectId: "synthetic-other",
+        input: 1,
+        output: 2,
+      },
+    ],
+  });
+  await evaluate(
+    'document.querySelector("#project").value = "synthetic"; document.querySelector("#project").dispatchEvent(new Event("change", { bubbles: true }))',
+  );
+  assert.equal(
+    await evaluate('document.querySelectorAll(".stat-number")[2].textContent'),
+    "1",
+    "project filter isolates its own calls",
+  );
+  assert.equal(
+    await evaluate("window.savedState.projectId"),
+    "synthetic",
+    "project filter is retained in host state",
+  );
+  await click('[data-page="projects"]');
+  assert.equal(
+    await evaluate('document.querySelectorAll(".project-card").length'),
+    2,
+    "Projects always displays the complete index",
+  );
+  await click('[data-action="export"]');
+  assert.equal(
+    await evaluate(
+      'window.hostMessages.findLast(message => message.type === "export").projectId',
+    ),
+    "all",
+    "Projects exports the same all-project scope it displays",
+  );
+  await click('[data-page="activity"]');
+  assert.equal(
+    await evaluate('document.querySelectorAll(".session").length'),
+    1,
+    "activity restores the selected project filter",
+  );
+  await snapshot(fixture);
   await click('[data-page="about"]');
   await evaluate('document.querySelector("[data-action=settings]").focus()');
   const settingsFocus = await evaluate("document.activeElement.dataset.focus");
@@ -460,6 +610,63 @@ try {
     "Synthetic local file error",
     "error state is visible",
   );
+  assert.equal(
+    await evaluate('document.querySelector("[data-action=export]").disabled'),
+    true,
+    "export is disabled while usage totals are still indexing",
+  );
+  const indexingAccessibility = await send("Accessibility.getFullAXTree");
+  assert.ok(
+    indexingAccessibility.nodes.some(
+      (node) =>
+        !node.ignored &&
+        node.name?.value === "Export" &&
+        node.description?.value ===
+          "Export is unavailable while saved usage is being indexed.",
+    ),
+    "disabled export has an accessible explanation",
+  );
+  const messagesBeforeIndexingExport = await evaluate(
+    "window.hostMessages.length",
+  );
+  await evaluate('document.querySelector("[data-action=export]").click()');
+  assert.equal(
+    await evaluate("window.hostMessages.length"),
+    messagesBeforeIndexingExport,
+    "indexing does not emit an export request",
+  );
+  await screenshot("320-indexing");
+  await snapshot({
+    ...fixture,
+    errors: ["Synthetic local file error"],
+    indexing: false,
+  });
+  assert.equal(
+    await evaluate('document.querySelector("[data-action=export]").disabled'),
+    true,
+    "export is disabled when source errors leave coverage incomplete",
+  );
+  const errorAccessibility = await send("Accessibility.getFullAXTree");
+  assert.ok(
+    errorAccessibility.nodes.some(
+      (node) =>
+        !node.ignored &&
+        node.name?.value === "Export" &&
+        node.description?.value ===
+          "Some usage could not be read. Resolve the storage errors and refresh before exporting.",
+    ),
+    "error-blocked export has an accessible explanation",
+  );
+  const messagesBeforeErrorExport = await evaluate(
+    "window.hostMessages.length",
+  );
+  await evaluate('document.querySelector("[data-action=export]").click()');
+  assert.equal(
+    await evaluate("window.hostMessages.length"),
+    messagesBeforeErrorExport,
+    "source errors do not emit an export request",
+  );
+  await screenshot("320-error");
   await snapshot({ ...fixture, calls: [], status: "blocked", indexing: false });
   assert.equal(
     await evaluate('document.querySelector(".onboarding h2").textContent'),
@@ -467,8 +674,317 @@ try {
     "blocked empty state is explicit",
   );
   await screenshot("320-blocked");
+  await snapshot({
+    ...fixture,
+    calls: [],
+    status: "active",
+    statusDetail: "Tracking is active; no completed calls yet.",
+  });
+  assert.equal(
+    await evaluate('document.querySelector(".onboarding h2").textContent'),
+    "No usage yet",
+    "active tracking with no completed calls does not claim tracking is off",
+  );
+  assert.equal(
+    await evaluate(
+      'document.querySelector(".onboarding [data-action=disable]") !== null',
+    ),
+    true,
+    "active empty state offers Stop tracking",
+  );
+
+  const manySessions = {
+    ...fixture,
+    calls: Array.from({ length: 205 }, (_, i) => ({
+      id: `synthetic-pagination-${i}`,
+      sessionId: `synthetic-session-${i}`,
+      projectId: "synthetic",
+      timestamp: now - i * 1000,
+      model:
+        '<img src="remote.invalid/model" onerror="window.modelInjected=true">',
+      input: 1,
+      output: 2,
+      failed: false,
+    })),
+  };
+  await snapshot(manySessions);
+  await click('[data-page="activity"]');
+  assert.equal(
+    await evaluate('document.querySelectorAll(".session").length'),
+    100,
+  );
+  await click('[data-action="moreSessions"]');
+  assert.equal(
+    await evaluate('document.querySelectorAll(".session").length'),
+    200,
+  );
+  assert.equal(
+    await evaluate(
+      'document.activeElement === document.querySelectorAll(".session-toggle")[100]',
+    ),
+    true,
+    "pagination moves keyboard focus to the first newly revealed session",
+  );
+  await click('[data-action="moreSessions"]');
+  assert.equal(
+    await evaluate('document.querySelectorAll(".session").length'),
+    205,
+  );
+  assert.equal(
+    await evaluate(
+      'document.activeElement === document.querySelectorAll(".session-toggle")[200]',
+    ),
+    true,
+    "final pagination preserves meaningful keyboard focus when the control disappears",
+  );
+  assert.equal(
+    await evaluate('document.querySelector(".toast").textContent'),
+    "205 of 205 sessions shown.",
+    "pagination announces its result",
+  );
+  await click(".session-toggle");
+  assert.equal(
+    await evaluate('document.querySelectorAll(".session-detail img").length'),
+    0,
+  );
+  assert.equal(
+    await evaluate("window.modelInjected === true"),
+    false,
+    "model names stay escaped",
+  );
+  await snapshot({ ...fixture, updatedAt: now - 1000 });
+  assert.equal(
+    await evaluate('document.querySelectorAll(".session").length'),
+    0,
+    "a snapshot after a local clock rollback is still rendered",
+  );
+  const includedCall = {
+    id: "synthetic-included-call",
+    projectId: "synthetic",
+    sessionId: "synthetic-included-session",
+    timestamp: now - 1000,
+    model: "gpt-5.4",
+    source: "cli",
+    requests: 2,
+    input: 1000,
+    output: 100,
+    costIncludedInSessionTotal: true,
+    failed: false,
+  };
+  await snapshot({ ...fixture, calls: [includedCall] });
+  await click('[data-page="overview"]');
+  assert.equal(
+    await evaluate(
+      'document.querySelector(".cost-stat .stat-number").textContent',
+    ),
+    "Included",
+    "covered CLI increments have an explicit cost label",
+  );
+  assert.equal(
+    await evaluate(
+      'document.querySelector(".cost-stat .stat-foot").textContent',
+    ),
+    "Included in session total",
+    "covered increments are not called unknown or unpriced",
+  );
+  await click('[data-page="activity"]');
+  assert.equal(
+    await evaluate(
+      'document.querySelector(".session-figures > strong").textContent',
+    ),
+    "Included",
+    "included session cost is explicit in activity",
+  );
+  await click(".session-toggle");
+  assert.equal(
+    await evaluate(
+      'document.querySelector(".session-model > strong").textContent',
+    ),
+    "Included",
+    "included model cost is explicit in expanded details",
+  );
+  await snapshot({
+    ...fixture,
+    calls: [
+      includedCall,
+      {
+        ...includedCall,
+        id: "synthetic-reported-total",
+        timestamp: now,
+        input: 0,
+        output: 0,
+        requests: 0,
+        nanoAiu: 10_000_000_000,
+        costIncludedInSessionTotal: undefined,
+      },
+    ],
+  });
+  assert.equal(
+    await evaluate(
+      'document.querySelector(".session-figures > strong").textContent',
+    ),
+    "$0.10",
+    "reported session total is counted once without a second estimate or unpriced suffix",
+  );
+  await screenshot("320-included-session");
+
+  // Exercise local calendar filtering across both spring and autumn DST boundaries.
+  for (const scenario of [
+    {
+      timezone: "America/Los_Angeles",
+      start: "2026-03-07",
+      end: "2026-03-10",
+      days: 4,
+    },
+    {
+      timezone: "Europe/Berlin",
+      start: "2026-03-27",
+      end: "2026-03-31",
+      days: 5,
+    },
+    {
+      timezone: "America/Los_Angeles",
+      start: "2025-10-31",
+      end: "2025-11-03",
+      days: 4,
+    },
+    {
+      timezone: "Europe/Berlin",
+      start: "2025-10-24",
+      end: "2025-10-28",
+      days: 5,
+    },
+  ]) {
+    await send("Emulation.setTimezoneOverride", {
+      timezoneId: scenario.timezone,
+    });
+    const stateScript = await send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `window.fixtureState = ${JSON.stringify({ page: "overview", days: 14, rangeMode: "custom", customStartDate: scenario.start, customEndDate: scenario.end })};`,
+    });
+    await send("Page.navigate", { url });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const timestamps = await evaluate(`(() => {
+      const local = key => { const [y, m, d] = key.split("-").map(Number); return new Date(y, m - 1, d); };
+      const start = local(${JSON.stringify(scenario.start)}).getTime();
+      const afterEnd = local(${JSON.stringify(scenario.end)}); afterEnd.setDate(afterEnd.getDate() + 1);
+      return [start - 1, start, afterEnd.getTime() - 1, afterEnd.getTime()];
+    })()`);
+    await snapshot({
+      ...fixture,
+      calls: timestamps.map((timestamp, i) => ({
+        id: `dst-${i}`,
+        projectId: "synthetic",
+        timestamp,
+        model: "Synthetic DST model",
+        input: 1,
+        output: 2,
+        failed: false,
+      })),
+    });
+    assert.equal(
+      await evaluate('document.querySelector(".chart-interval").textContent'),
+      `Daily intervals · ${scenario.days} days selected`,
+      `${scenario.timezone}: inclusive day count survives DST`,
+    );
+    assert.equal(
+      await evaluate(
+        'document.querySelectorAll(".stat-number")[2].textContent',
+      ),
+      "2",
+      `${scenario.timezone}: exact local boundary calls included and adjacent calls excluded`,
+    );
+    await click('[data-action="export"]');
+    const exported = await evaluate(
+      'window.hostMessages.findLast(message => message.type === "export")',
+    );
+    assert.equal(
+      exported.startDate,
+      scenario.start,
+      "custom export preserves the displayed start date",
+    );
+    assert.equal(
+      exported.endDate,
+      scenario.end,
+      "custom export preserves the displayed end date",
+    );
+    await click('[data-shift="previous"]');
+    await click('[data-shift="next"]');
+    const shiftedState = await evaluate("window.savedState");
+    assert.equal(
+      shiftedState.customStartDate,
+      scenario.start,
+      "range paging round-trips across DST",
+    );
+    assert.equal(
+      shiftedState.customEndDate,
+      scenario.end,
+      "range paging preserves inclusive end across DST",
+    );
+    await send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: stateScript.identifier,
+    });
+  }
+  await send("Emulation.setDeviceMetricsOverride", {
+    width: 1408,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await send("Page.navigate", { url });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await snapshot({
+    ...fixture,
+    calls: [
+      {
+        ...fixture.calls[0],
+        input: 100,
+        output: 20,
+        cacheRead: 0,
+        nanoAiu: 100_000_000,
+      },
+    ],
+  });
+  await evaluate('document.body.className = "vscode-light"');
+  assert.equal(
+    await evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+    true,
+    "light theme has no page overflow",
+  );
+  await screenshot("1408-light");
+  await send("Emulation.setDeviceMetricsOverride", {
+    width: 390,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await evaluate(`document.body.className = "vscode-high-contrast";
+    for (const [name, value] of Object.entries({ "editor-background": "#000000", "editor-foreground": "#ffffff", "contrastBorder": "#ffffff", "focusBorder": "#ffff00" })) document.documentElement.style.setProperty("--vscode-" + name, value);`);
+  await click('[data-focus="calendar-trigger"]');
+  assert.equal(
+    await evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
+    true,
+    "high contrast calendar has no page overflow",
+  );
+  assert.equal(
+    await evaluate(
+      'getComputedStyle(document.querySelector(".calendar-day.range-edge")).outlineStyle',
+    ),
+    "solid",
+    "selected calendar dates remain visible in high contrast",
+  );
+  await screenshot("390-high-contrast-calendar");
+  assert.deepEqual(
+    browserErrors,
+    [],
+    "dashboard smoke produces no uncaught browser errors",
+  );
+  assert.deepEqual(
+    policyViolations,
+    [],
+    "dashboard runs under its strict local-asset CSP",
+  );
   console.log(
-    "Dashboard navigation, responsive layouts, calendar keyboard/mouse behavior, unknown usage, live announcements, focus preservation, and empty/error states passed.",
+    "Dashboard navigation, responsive layouts, calendar keyboard/mouse and DST behavior, pagination, unknown usage, strict CSP and escaping, live announcements, focus preservation, and loading/empty/error states passed.",
   );
 } finally {
   socket?.close();

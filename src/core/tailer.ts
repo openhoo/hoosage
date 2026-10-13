@@ -43,7 +43,21 @@ export class UsageTailer {
           return undefined;
         throw error;
       });
-      if (!info) return;
+      if (!info) {
+        // User-deleted history must agree with a fresh scan. Keep rotation
+        // deduplication while a replacement exists, but no absent-file usage.
+        this.calls.clear();
+        this.offset = 0;
+        this.inode = undefined;
+        this.pending = "";
+        this.dropping = false;
+        this.decoder = new StringDecoder("utf8");
+        this.caughtUp = true;
+        this.skippedLines = 0;
+        this.ignoredLines = 0;
+        this.processedLines = 0;
+        return;
+      }
       if (this.inode !== info.ino || info.size < this.offset) {
         this.offset = 0;
         this.pending = "";
@@ -85,8 +99,7 @@ export class UsageTailer {
       try {
         const calls = parseLine(line, this.projectId);
         if (!calls.length) this.ignoredLines++;
-        for (const call of calls)
-          this.calls.set(call.id, call);
+        for (const call of calls) this.calls.set(call.id, call);
       } catch {
         this.skippedLines++;
       }

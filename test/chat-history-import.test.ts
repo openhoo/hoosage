@@ -1,7 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -533,6 +541,12 @@ test("cached transcript identity aliases stay private and preserve late-ID mergi
     // Read unchanged transcripts through the persistent cache, which must
     // retain request aliases without exporting additional call properties.
     const cached = (await scanChatHistory(p.globalStorage, cache)).calls;
+    for (const name of await readdir(cache.directory)) {
+      const persisted = await readFile(join(cache.directory, name), "utf8");
+      assert.ok(!persisted.includes("private-request-id"));
+      assert.ok(!persisted.includes("private-model-message-id"));
+      assert.ok(!persisted.includes("dedupeKey"));
+    }
     const merged = mergeStoredHistory(stored, cached);
     assert.equal(merged.calls.length, 1);
     assert.equal(merged.calls[0]!.output, 20);
@@ -637,5 +651,98 @@ test("unknown multi-round output clears prior single-round fallback and stale co
   assert.equal(
     mergeStoredHistory(stale.calls, [completed]).calls[0]!.output,
     200,
+  );
+});
+
+test("a late identity bridge preserves the richest usage from all stored duplicates", () => {
+  const request = requestUsage(
+    { requestId: "bridge-request", timestamp: 1000, result: {} },
+    "original",
+    "original-session",
+  )!;
+  const richMessage = requestUsage(
+    {
+      requestId: "copied-request",
+      timestamp: 2000,
+      completionTokens: 200,
+      copilotCredits: 3,
+      elapsedMs: 800,
+      result: {
+        metadata: {
+          modelMessageId: "bridge-message",
+          toolCallRounds: [{}, {}],
+        },
+      },
+    },
+    "copy",
+    "copied-session",
+  )!;
+  const bridge = requestUsage(
+    {
+      requestId: "bridge-request",
+      timestamp: 1000,
+      completionTokens: 20,
+      copilotCredits: 1,
+      elapsedMs: 100,
+      result: {
+        metadata: {
+          modelMessageId: "bridge-message",
+          promptTokens: 50,
+          toolCallRounds: [{}],
+        },
+      },
+    },
+    "original",
+    "original-session",
+  )!;
+  const merged = mergeStoredHistory([request, richMessage], [bridge]);
+  assert.equal(merged.calls.length, 1);
+  assert.equal(merged.calls[0]!.projectId, "original");
+  assert.equal(merged.calls[0]!.sessionId, "original-session");
+  assert.equal(merged.calls[0]!.timestamp, 1000);
+  assert.equal(merged.calls[0]!.input, undefined);
+  assert.equal(merged.calls[0]!.output, 200);
+  assert.equal(merged.calls[0]!.requests, 2);
+  assert.equal(merged.calls[0]!.nanoAiu, 3_000_000_000);
+  assert.equal(merged.calls[0]!.durationMs, 800);
+  const restored = restoreHistory(
+    JSON.parse(JSON.stringify(storedHistoryPayload(merged.calls))),
+    "original",
+  );
+  assert.equal(
+    mergeStoredHistory(restored, [bridge, request, richMessage]).changed,
+    false,
+  );
+});
+
+test("invalid transcript timestamps and result arrays cannot create usage records", () => {
+  for (const timestamp of [
+    -1,
+    Number.MAX_SAFE_INTEGER,
+    Date.now() + 172_800_000,
+  ]) {
+    assert.equal(
+      requestUsage({ timestamp, result: {} }, "project", "session"),
+      undefined,
+    );
+    assert.deepEqual(
+      restoreHistory(
+        { calls: [{ id: "a".repeat(24), timestamp, model: "m" }] },
+        "project",
+      ),
+      [],
+    );
+  }
+  assert.equal(
+    requestUsage(
+      { timestamp: 1000, result: [] as unknown as {} },
+      "project",
+      "session",
+    ),
+    undefined,
+  );
+  assert.equal(
+    requestUsage({ timestamp: 0, result: {} }, "project", "session")?.timestamp,
+    0,
   );
 });

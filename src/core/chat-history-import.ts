@@ -173,6 +173,14 @@ const count = (value: unknown): number | undefined =>
     ? value
     : undefined;
 
+/** Invalid/far-future timestamps cannot reach calendar or CSV date formatters. */
+function historyTimestamp(value: unknown): number | undefined {
+  const timestamp = count(value);
+  return timestamp !== undefined && timestamp <= Date.now() + 86_400_000
+    ? timestamp
+    : undefined;
+}
+
 function modelName(request: ChatRequest): string {
   const selected =
     typeof request.modelId === "string"
@@ -197,10 +205,15 @@ export function requestUsage(
   request: ChatRequest,
   projectId: string,
   sessionId: string | undefined,
-): (UsageCall & { dedupeKey: string }) | undefined {
-  const timestamp = count(request.timestamp);
+): UsageCall | undefined {
+  const timestamp = historyTimestamp(request.timestamp);
   const result = request.result;
-  if (timestamp === undefined || !result || typeof result !== "object")
+  if (
+    timestamp === undefined ||
+    !result ||
+    typeof result !== "object" ||
+    Array.isArray(result)
+  )
     return undefined;
   const metadata = result.metadata ?? {};
   const rounds = Array.isArray(metadata.toolCallRounds)
@@ -226,9 +239,8 @@ export function requestUsage(
       : typeof request.requestId === "string" && request.requestId
         ? `request:${request.requestId}`
         : `time:${projectId}:${sessionId ?? ""}:${timestamp}`;
-  const call: UsageCall & { dedupeKey: string } = {
+  const call: UsageCall = {
     id: historyId(identity),
-    dedupeKey: identity,
     projectId,
     timestamp,
     model: modelName(request),
@@ -251,7 +263,7 @@ export function requestUsage(
   return call;
 }
 
-type RecoveredCall = UsageCall & { dedupeKey: string };
+type RecoveredCall = UsageCall;
 
 interface TranscriptEntry {
   size: number;
@@ -270,7 +282,7 @@ interface TranscriptIndex {
   changed: boolean;
 }
 
-const TRANSCRIPT_CACHE_FORMAT = 2;
+const TRANSCRIPT_CACHE_FORMAT = 3;
 
 async function sessionCalls(
   file: string,
@@ -388,10 +400,8 @@ async function loadTranscriptIndex(
     const calls: RecoveredCall[] = [];
     for (const item of entry.calls) {
       const call = restoreCall(item, projectId);
-      const dedupeKey = (item as { dedupeKey?: unknown } | null)?.dedupeKey;
-      if (!call || typeof dedupeKey !== "string" || dedupeKey.length > 2048)
-        break;
-      const restored = { ...call, dedupeKey };
+      if (!call) break;
+      const restored = call;
       const aliases = (item as { identityAliases?: unknown }).identityAliases;
       if (
         !Array.isArray(aliases) ||
@@ -510,7 +520,7 @@ function restoreCall(item: unknown, projectId: string): UsageCall | undefined {
   if (!item || typeof item !== "object") return undefined;
   const c = item as Record<string, unknown>;
   const id = label(c.id);
-  const timestamp = count(c.timestamp);
+  const timestamp = historyTimestamp(c.timestamp);
   if (!id || !/^[a-f0-9]{24}$/.test(id) || timestamp === undefined)
     return undefined;
   return {
@@ -526,6 +536,46 @@ function restoreCall(item: unknown, projectId: string): UsageCall | undefined {
     requests: count(c.requests),
     durationMs: count(c.durationMs),
     failed: c.failed === true,
+  };
+}
+
+function mergeMetadata(previous: UsageCall, call: UsageCall): UsageCall {
+  // Transcript output, credits, duration and model-call rounds grow as a
+  // request completes. Older copied snapshots cannot roll these back.
+  const maximum = (a?: number, b?: number) =>
+    a === undefined ? b : b === undefined ? a : Math.max(a, b);
+  const requests = maximum(previous.requests, call.requests);
+  const stale =
+    (previous.requests !== undefined &&
+      (call.requests === undefined || call.requests < previous.requests)) ||
+    (previous.output !== undefined &&
+      (call.output === undefined || call.output < previous.output));
+  return {
+    ...previous,
+    model: call.model === "unknown" || stale ? previous.model : call.model,
+    // Prompt size is only the last round's input once tool rounds grow.
+    input:
+      requests !== undefined && requests > 1
+        ? undefined
+        : stale
+          ? previous.input
+          : (call.input ?? previous.input),
+    // A single round's fallback output is not a measured aggregate after
+    // more rounds appear. Older lower-round copies cannot restore it.
+    output:
+      requests !== undefined &&
+      previous.requests !== undefined &&
+      requests > previous.requests &&
+      call.output === undefined
+        ? undefined
+        : previous.requests !== undefined &&
+            (call.requests === undefined || call.requests < previous.requests)
+          ? previous.output
+          : maximum(previous.output, call.output),
+    nanoAiu: maximum(previous.nanoAiu, call.nanoAiu),
+    requests,
+    durationMs: maximum(previous.durationMs, call.durationMs),
+    failed: stale ? previous.failed : call.failed,
   };
 }
 
@@ -562,48 +612,17 @@ export function mergeStoredHistory(
       changed = true;
       continue;
     }
-    // Transcript output, credits, duration and model-call rounds grow as a
-    // request completes. Older copied snapshots cannot roll these back.
-    const maximum = (a?: number, b?: number) =>
-      a === undefined ? b : b === undefined ? a : Math.max(a, b);
-    const requests = maximum(previous.requests, call.requests);
-    const stale =
-      (previous.requests !== undefined &&
-        (call.requests === undefined || call.requests < previous.requests)) ||
-      (previous.output !== undefined &&
-        (call.output === undefined || call.output < previous.output));
+    // A late alias may bridge several records left by an earlier import.
+    // Preserve their metadata before discarding the duplicate identities.
+    const merged = matches.slice(1).reduce(mergeMetadata, previous);
     const updated: UsageCall = {
-      ...previous,
-      // Once a message ID arrived, an older request-only copy cannot move
-      // the canonical identity back to its initial request ID.
+      ...mergeMetadata(merged, call),
+      // Once a message ID arrived, a request-only copy cannot move the
+      // canonical identity back to its initial request ID.
       id:
         aliases.length === 1 && (identityAliases.get(previous)?.length ?? 0) > 1
           ? previous.id
           : call.id,
-      model: call.model === "unknown" || stale ? previous.model : call.model,
-      // Prompt size is only the last round's input once tool rounds grow.
-      input:
-        requests !== undefined && requests > 1
-          ? undefined
-          : stale
-            ? previous.input
-            : (call.input ?? previous.input),
-      // A single round's fallback output is not a measured aggregate after
-      // more rounds appear. Older lower-round copies cannot restore it.
-      output:
-        requests !== undefined &&
-        previous.requests !== undefined &&
-        requests > previous.requests &&
-        call.output === undefined
-          ? undefined
-          : previous.requests !== undefined &&
-              (call.requests === undefined || call.requests < previous.requests)
-            ? previous.output
-            : maximum(previous.output, call.output),
-      nanoAiu: maximum(previous.nanoAiu, call.nanoAiu),
-      requests,
-      durationMs: maximum(previous.durationMs, call.durationMs),
-      failed: stale ? previous.failed : call.failed,
     };
     const combinedAliases = [
       ...new Set(
@@ -741,14 +760,8 @@ export async function scanChatHistory(
       },
     );
   found.sort((a, b) => a.timestamp - b.timestamp);
-  const recoveredCalls: UsageCall[] = [];
-  for (const recovered of found) {
-    const { dedupeKey, ...call } = recovered;
-    identityAliases.set(call, identityAliases.get(recovered) ?? [call.id]);
-    recoveredCalls.push(call);
-  }
   // Earliest attribution stays fixed, while later copies can complete usage
   // and link request identities to their subsequently written message IDs.
-  const calls = mergeStoredHistory([], recoveredCalls).calls;
+  const calls = mergeStoredHistory([], found).calls;
   return { projects: [...projects.values()], calls };
 }

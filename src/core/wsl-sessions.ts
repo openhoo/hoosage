@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
-import { join, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { CliUsageScanner } from "./cli";
+import { wslSessionSourceId } from "./path-identity";
 import type { ScanCache } from "./scan-cache";
 import type { UsageCall } from "./types";
 
@@ -21,14 +22,19 @@ export function wslPathToWindows(
   path: string,
 ): string | undefined {
   if (!DISTRO_NAME.test(distro) || !path.startsWith("/")) return undefined;
-  if (path.includes("\0")) return undefined;
-  const drive = /^\/mnt\/([a-zA-Z])(?:\/(.*))?$/.exec(path);
+  // Linux permits names Windows cannot represent. In particular, a literal
+  // backslash must not become a directory separator or a colon an ADS path.
+  if (/[\\<>:"|?*\u0000-\u001f]/.test(path)) return undefined;
+  // Resolve Linux parents before selecting a mount: /mnt/c/../../home is
+  // /home in Linux, not C:\home in Windows.
+  const normalized = posix.normalize(path);
+  const drive = /^\/mnt\/([a-zA-Z])(?:\/(.*))?$/.exec(normalized);
   if (drive)
     return win32.normalize(
       `${drive[1]!.toUpperCase()}:\\${(drive[2] ?? "").replace(/\//g, "\\")}`,
     );
   return win32.normalize(
-    `\\\\wsl.localhost\\${distro}${path.replace(/\//g, "\\")}`,
+    `\\\\wsl.localhost\\${distro}${normalized.replace(/\//g, "\\")}`,
   );
 }
 
@@ -150,23 +156,36 @@ export class WslCliSessions {
 
   private async discover(distro: string): Promise<void> {
     const base = join(this.shareRoot, distro);
-    const homes: string[] = [join(base, "root")];
+    const homes: Array<{ path: string; linux: string }> = [
+      { path: join(base, "root"), linux: "/root" },
+    ];
     try {
       for (const entry of await readdir(join(base, "home"), {
         withFileTypes: true,
       }))
-        if (entry.isDirectory()) homes.push(join(base, "home", entry.name));
+        if (entry.isDirectory())
+          homes.push({
+            path: join(base, "home", entry.name),
+            linux: posix.join("/home", entry.name),
+          });
     } catch {
       /* No readable /home in this distribution. */
     }
     for (const home of homes) {
-      const root = join(home, ".copilot", "session-state");
+      const root = join(home.path, ".copilot", "session-state");
       if (this.scanners.has(root)) continue;
       const info = await stat(root).catch(() => undefined);
       if (info?.isDirectory())
         this.scanners.set(root, {
           distro,
-          scanner: new CliUsageScanner(root, this.cache),
+          scanner: new CliUsageScanner(
+            root,
+            this.cache,
+            wslSessionSourceId(
+              distro,
+              posix.join(home.linux, ".copilot", "session-state"),
+            ),
+          ),
         });
     }
   }

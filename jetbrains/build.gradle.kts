@@ -21,3 +21,10 @@ dependencies {
 kotlin { jvmToolchain(21) }
 
 tasks.test { useJUnit() }
+
+tasks.processResources {
+    from(layout.projectDirectory.file("../LICENSE")) {
+        into("META-INF/licenses")
+        rename { "hoosage-MIT.txt" }
+    }
+}

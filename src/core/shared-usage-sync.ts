@@ -52,6 +52,7 @@ function validCall(value: unknown): value is UsageCall {
     "cacheRead",
     "cacheWrite",
     "nanoAiu",
+    "costIncludedInSessionTotal",
     "requests",
     "durationMs",
     "failed",
@@ -70,6 +71,9 @@ function validCall(value: unknown): value is UsageCall {
     typeof call.model === "string" &&
     call.model.length <= 256 &&
     typeof call.failed === "boolean" &&
+    (call.costIncludedInSessionTotal === undefined ||
+      (call.costIncludedInSessionTotal === true &&
+        (call.source === "cli" || call.source === "jetbrains"))) &&
     (call.source === undefined ||
       (typeof call.source === "string" && sources.has(call.source))) &&
     (call.sessionId === undefined ||
@@ -129,7 +133,8 @@ export class SharedUsageSync {
   private readonly ownFile: string;
   private readonly written = new Map<string, string>();
   private readonly peerFiles = new Map<string, PeerFile>();
-  private loadedOwnFile = false;
+  private ownState?: { identity: string; size: number; modified: number };
+  private ownNeedsNewline = false;
 
   constructor(
     sharedDirectory: string,
@@ -151,10 +156,7 @@ export class SharedUsageSync {
   ): Promise<UsageCall[]> {
     try {
       await mkdir(this.directory, { recursive: true, mode: 0o700 });
-      if (!this.loadedOwnFile) {
-        await this.loadWritten();
-        this.loadedOwnFile = true;
-      }
+      await this.loadWritten();
       const pending: SharedEntry[] = [];
       const pendingKeys: [string, string][] = [];
       for (const call of localCalls) {
@@ -180,10 +182,19 @@ export class SharedUsageSync {
           if (!fileStat.isFile())
             throw new Error("A shared usage file is not a regular file.");
           const contents =
-            pending.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+            (this.ownNeedsNewline ? "\n" : "") +
+            pending.map((entry) => JSON.stringify(entry)).join("\n") +
+            "\n";
           if (fileStat.size + Buffer.byteLength(contents) > MAX_FILE_BYTES)
             throw new Error("A shared usage file exceeds the 64 MiB limit.");
           await handle.writeFile(contents, { encoding: "utf8" });
+          this.ownNeedsNewline = false;
+          const writtenStat = await handle.stat();
+          this.ownState = {
+            identity: `${writtenStat.dev}:${writtenStat.ino}:${writtenStat.birthtimeMs}`,
+            size: writtenStat.size,
+            modified: writtenStat.mtimeMs,
+          };
         } finally {
           await handle.close();
         }
@@ -301,14 +312,33 @@ export class SharedUsageSync {
     try {
       handle = await open(
         this.ownFile,
-        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+        constants.O_RDWR | (constants.O_NOFOLLOW ?? 0),
       );
       const fileStat = await handle.stat();
       if (!fileStat.isFile())
         throw new Error("A shared usage file is not a regular file.");
       if (fileStat.size > MAX_FILE_BYTES)
         throw new Error("A shared usage file exceeds the 64 MiB limit.");
-      const contents = await handle.readFile({ encoding: "utf8" });
+      const identity = `${fileStat.dev}:${fileStat.ino}:${fileStat.birthtimeMs}`;
+      if (
+        this.ownState?.identity === identity &&
+        this.ownState.size === fileStat.size &&
+        this.ownState.modified === fileStat.mtimeMs
+      )
+        return;
+      let contents = await handle.readFile({ encoding: "utf8" });
+      let truncateTo: number | undefined;
+      if (contents && !contents.endsWith("\n")) {
+        const boundary = contents.lastIndexOf("\n") + 1;
+        try {
+          JSON.parse(contents.slice(boundary));
+        } catch {
+          // An interrupted append may leave one partial final record. Only
+          // repair that suffix; complete or interior invalid entries still fail.
+          contents = contents.slice(0, boundary);
+          truncateTo = Buffer.byteLength(contents);
+        }
+      }
       const loaded = new Map<string, string>();
       for (const line of contents.split("\n")) {
         if (!line) continue;
@@ -318,10 +348,24 @@ export class SharedUsageSync {
           JSON.stringify(entry.call),
         );
       }
+      if (truncateTo !== undefined) await handle.truncate(truncateTo);
+      const recoveredStat = await handle.stat();
+      this.written.clear();
       for (const [key, fingerprint] of loaded)
         this.written.set(key, fingerprint);
+      this.ownState = {
+        identity,
+        size: recoveredStat.size,
+        modified: recoveredStat.mtimeMs,
+      };
+      this.ownNeedsNewline = contents.length > 0 && !contents.endsWith("\n");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.written.clear();
+        this.ownState = undefined;
+        this.ownNeedsNewline = false;
+        return;
+      }
       throw error;
     } finally {
       await handle?.close();

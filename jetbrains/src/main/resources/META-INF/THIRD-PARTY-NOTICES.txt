@@ -1,0 +1,13 @@
+hoosage for JetBrains bundles the following unmodified libraries:
+
+Google Gson 2.13.2
+Source: https://github.com/google/gson/tree/gson-parent-2.13.2
+License: Apache License, Version 2.0
+
+Error Prone annotations 2.41.0
+Source: https://github.com/google/error-prone/tree/v2.41.0
+License: Apache License, Version 2.0
+
+The complete Apache License, Version 2.0 is included in
+META-INF/licenses/Apache-2.0.txt. Hoosage's MIT license is included in
+META-INF/licenses/hoosage-MIT.txt.
