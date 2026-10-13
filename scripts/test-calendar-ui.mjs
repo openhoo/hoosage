@@ -415,9 +415,26 @@ try {
       `${width}px: outside click closes calendar`,
     );
   }
+  // A browser preview has no VS Code host. Even a same-origin snapshot must
+  // not become active after the user exits sample-data mode.
+  await evaluate(`window.dispatchEvent(new MessageEvent("message", {
+    origin: window.origin, source: window.parent,
+    data: { type: "snapshot", snapshot: {
+      projects: [], calls: [], status: "active", statusDetail: "Untrusted preview snapshot",
+      updatedAt: Date.now(), skippedLines: 0, errors: []
+    } }
+  }))`);
+  await click('[data-action="exitDemo"]');
+  assert.equal(
+    await evaluate('document.querySelector(".onboarding h2").textContent'),
+    "Tracking is off",
+    "browser preview rejects snapshots even after exiting sample data",
+  );
+
   // Real-host fixture: snapshots and status updates must not steal keyboard focus.
   await send("Page.addScriptToEvaluateOnNewDocument", {
-    source: `window.acquireVsCodeApi = () => ({ getState: () => window.fixtureState || {}, setState: state => { window.savedState = state; }, postMessage: message => { window.hostMessages = [...(window.hostMessages || []), message]; } });`,
+    // The actual VS Code API bootstrap hides the physical parent from content.
+    source: `window.parent = window; window.top = window; window.frameElement = null; window.acquireVsCodeApi = () => ({ getState: () => window.fixtureState || {}, setState: state => { window.savedState = state; }, postMessage: message => { window.hostMessages = [...(window.hostMessages || []), message]; } });`,
   });
   await send("Page.navigate", { url });
   await new Promise((resolve) => setTimeout(resolve, 200));
@@ -454,8 +471,85 @@ try {
   };
   const snapshot = async (value) =>
     evaluate(
-      `window.dispatchEvent(new MessageEvent("message", { data: { type: "snapshot", snapshot: ${JSON.stringify(value)} } }))`,
+      `window.dispatchEvent(new MessageEvent("message", { origin: window.origin, source: window.parent, data: { type: "snapshot", snapshot: ${JSON.stringify(value)} } }))`,
     );
+  await snapshot(fixture);
+  const initialHostMarkup = await evaluate(
+    'document.querySelector("#app").innerHTML',
+  );
+  for (const boundary of [
+    'origin: "https://attacker.invalid", source: window.parent',
+    'origin: "null", source: window.parent',
+  ]) {
+    await evaluate(`window.dispatchEvent(new MessageEvent("message", {
+      ${boundary}, data: { type: "snapshot", snapshot: ${JSON.stringify({ ...fixture, statusDetail: "Untrusted host snapshot" })} }
+    }))`);
+    assert.equal(
+      await evaluate('document.querySelector("#app").innerHTML'),
+      initialHostMarkup,
+      `untrusted message boundary leaves the current snapshot unchanged: ${boundary}`,
+    );
+  }
+  for (const malformed of [
+    {
+      ...fixture,
+      calls: [
+        {
+          ...fixture.calls[0],
+          input:
+            '\"><img id="snapshot-injected" src="/missing" onerror="window.snapshotInjected=true"><progress value="',
+        },
+      ],
+    },
+    { ...fixture, updatedAt: "2026-10-13" },
+    { ...fixture, projects: [{ ...fixture.projects[0], folderCount: "1" }] },
+  ]) {
+    await snapshot(malformed);
+    assert.equal(
+      await evaluate('document.querySelector("#app").innerHTML'),
+      initialHostMarkup,
+      "malformed trusted-origin snapshots leave the current snapshot unchanged",
+    );
+  }
+  assert.equal(
+    await evaluate(
+      'Boolean(document.querySelector("#snapshot-injected")) || window.snapshotInjected === true',
+    ),
+    false,
+    "malformed counter payloads cannot inject HTML or execute code",
+  );
+  for (const field of ["projects", "calls", "errors"]) {
+    // Construct holes in the browser: JSON.stringify would turn them into
+    // null and would miss the Array.every sparse-array validation regression.
+    await evaluate(`window.dispatchEvent(new MessageEvent("message", {
+      origin: window.origin, source: window.parent,
+      data: { type: "snapshot", snapshot: { ...${JSON.stringify(fixture)}, ${field}: Array(1) } }
+    }))`);
+    assert.equal(
+      await evaluate('document.querySelector("#app").innerHTML'),
+      initialHostMarkup,
+      `sparse ${field} cannot replace the current snapshot`,
+    );
+  }
+  await snapshot({
+    ...fixture,
+    projects: [
+      {
+        ...fixture.projects[0],
+        name: "Fractional timestamp accepted",
+        createdAt: 0.5,
+      },
+    ],
+    calls: [{ ...fixture.calls[0], timestamp: now - 0.5, durationMs: 0.5 }],
+    updatedAt: now + 0.5,
+  });
+  assert.equal(
+    await evaluate(
+      'document.querySelector("#project option:last-child").textContent',
+    ),
+    "Fractional timestamp accepted",
+    "finite fractional timestamps and durations remain valid",
+  );
   await snapshot(fixture);
   assert.equal(
     await evaluate('document.querySelectorAll(".stat-number")[1].textContent'),

@@ -108,6 +108,82 @@ const h = (s: unknown) =>
         c
       ]!,
   );
+
+/** Messages cross a runtime boundary; TypeScript types do not validate them. */
+function isSnapshot(value: unknown): value is Snapshot {
+  const record = (item: unknown): item is Record<string, unknown> =>
+    typeof item === "object" && item !== null && !Array.isArray(item);
+  const count = (item: unknown) =>
+    typeof item === "number" && Number.isSafeInteger(item) && item >= 0;
+  const timestamp = (item: unknown) =>
+    typeof item === "number" &&
+    Number.isFinite(item) &&
+    item >= 0 &&
+    item <= 8_640_000_000_000_000;
+  const optionalString = (item: unknown) =>
+    item === undefined || typeof item === "string";
+  const optionalBoolean = (item: unknown) =>
+    item === undefined || typeof item === "boolean";
+  if (!record(value)) return false;
+  return (
+    Array.isArray(value.projects) &&
+    Array.from(value.projects).every(
+      (project: unknown) =>
+        record(project) &&
+        typeof project.id === "string" &&
+        typeof project.name === "string" &&
+        typeof project.kind === "string" &&
+        ["folder", "workspace", "cli", "jetbrains", "chat"].includes(
+          project.kind,
+        ) &&
+        count(project.folderCount) &&
+        timestamp(project.createdAt),
+    ) &&
+    Array.isArray(value.calls) &&
+    Array.from(value.calls).every(
+      (call: unknown) =>
+        record(call) &&
+        typeof call.id === "string" &&
+        typeof call.projectId === "string" &&
+        typeof call.model === "string" &&
+        timestamp(call.timestamp) &&
+        typeof call.failed === "boolean" &&
+        optionalString(call.sessionId) &&
+        (call.source === undefined ||
+          (typeof call.source === "string" &&
+            ["chat", "cli", "jetbrains", "chat-history"].includes(
+              call.source,
+            ))) &&
+        [
+          "input",
+          "output",
+          "cacheRead",
+          "cacheWrite",
+          "requests",
+          "nanoAiu",
+        ].every((key) => call[key] === undefined || count(call[key])) &&
+        (call.durationMs === undefined ||
+          (typeof call.durationMs === "number" &&
+            Number.isFinite(call.durationMs) &&
+            call.durationMs >= 0)) &&
+        (call.costIncludedInSessionTotal === undefined ||
+          call.costIncludedInSessionTotal === true),
+    ) &&
+    optionalString(value.currentProjectId) &&
+    typeof value.status === "string" &&
+    ["off", "waiting", "active", "blocked", "reload"].includes(value.status) &&
+    typeof value.statusDetail === "string" &&
+    timestamp(value.updatedAt) &&
+    count(value.skippedLines) &&
+    Array.isArray(value.errors) &&
+    Array.from(value.errors).every(
+      (error: unknown) => typeof error === "string",
+    ) &&
+    optionalBoolean(value.canStopTracking) &&
+    optionalBoolean(value.indexing) &&
+    optionalBoolean(value.demo)
+  );
+}
 const paths: Record<string, string> = {
   overview: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
   projects:
@@ -351,7 +427,7 @@ function modelMix(calls: UsageCall[]) {
     .map((m, i) => {
       const modelCalls = calls.filter((c) => c.model === m.model);
       const price = costs(modelCalls);
-      return `<div class="model"><div class="model-top"><span class="model-avatar tone-${i}">${h(m.model.slice(0, 1).toUpperCase())}</span><strong title="${h(m.model)}">${h(m.model)}</strong><span>${total ? `${Math.round((m.tokens / total) * 100)}%` : "—"}</span></div><progress class="model-progress tone-${i}" max="${total || 1}" value="${m.tokens}" aria-label="${h(m.model)} share of observed tokens"></progress><div class="model-meta"><span>${callCount(m)} · ${knownTokenLabel(modelCalls, m.tokens, "total")} observed tokens</span><strong class="model-cost" title="${h(costDescription(price))}">${h(costLabel(price))}</strong></div></div>`;
+      return `<div class="model"><div class="model-top"><span class="model-avatar tone-${i}">${h(m.model.slice(0, 1).toUpperCase())}</span><strong title="${h(m.model)}">${h(m.model)}</strong><span>${total ? `${Math.round((m.tokens / total) * 100)}%` : "—"}</span></div><progress class="model-progress tone-${i}" max="${h(total || 1)}" value="${h(m.tokens)}" aria-label="${h(m.model)} share of observed tokens"></progress><div class="model-meta"><span>${callCount(m)} · ${knownTokenLabel(modelCalls, m.tokens, "total")} observed tokens</span><strong class="model-cost" title="${h(costDescription(price))}">${h(costLabel(price))}</strong></div></div>`;
     })
     .join(
       "",
@@ -386,7 +462,7 @@ function projects(calls: UsageCall[], embedded = false) {
     row.usage.length && all ? `${Math.round((row.tokens / all) * 100)}%` : "—";
   const callTitle = (row: (typeof rows)[number]) =>
     row.usage.length ? h(callCount(row)) : "No usage in selected period";
-  return `${!embedded ? `<section class="projects-intro" aria-label="Project overview"><span class="projects-intro-icon">${icon("projects")}</span><div class="projects-intro-copy"><span class="section-eyebrow">PROJECT INDEX</span><h2>Every project at a glance</h2><p>Usage stays with its own workspace or local session source. Open a project to inspect its overview. To aggregate a known Windows/WSL checkout, run <strong>hoosage: Configure Shared Project Sync</strong> on both hosts.</p></div><div class="projects-intro-stats"><div><strong>${number(rows.length)}</strong><span>indexed</span></div><div><strong>${number(rows.filter((row) => row.usage.length).length)}</strong><span>with records</span></div></div></section>` : ""}<section class="card projects-card" aria-label="Project usage">${embedded ? `<div class="card-heading"><h2>Projects</h2><button class="text-button" data-page="projects">All projects ${icon("arrow")}</button></div>` : `<div class="card-heading projects-heading"><div><span class="section-eyebrow">SELECTED PERIOD</span><h2>Project breakdown</h2></div><span class="small-tag">Most tokens first</span></div>`}<div class="table-scroll"><table><thead><tr><th scope="col">Project</th><th scope="col">Model calls</th><th scope="col">Observed tokens</th><th scope="col">Cost (USD)</th><th scope="col" class="share-column">Token share</th><th scope="col"><span class="sr-only">View project</span></th></tr></thead><tbody>${rows.map((row, i) => `<tr><td><button class="project-link" data-project="${h(row.project.id)}">${projectName(row, i)}</button></td><td title="${callTitle(row)}">${row.usage.length ? measuredCalls(row) : "—"}</td><td class="token-cell" title="${row.usage.length ? (row.missingUsage ? `${count(row.missingUsage, "entry")} with incomplete token data` : "Observed input and output tokens") : "No usage in selected period"}">${row.usage.length ? knownTokenLabel(row.usage, row.tokens, "total") : "—"}</td><td class="cost-cell" title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</td><td class="share-column"><div class="share-cell"><progress max="${all || 1}" value="${row.tokens}" aria-label="${h(row.project.name)} share of observed tokens"></progress><span>${share(row)}</span></div></td><td><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></td></tr>`).join("")}</tbody></table></div><div class="project-cards">${rows.map((row, i) => `<article class="project-card"><div class="project-card-head"><button class="project-link" data-project="${h(row.project.id)}">${projectName(row, i)}</button><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></div><dl class="project-card-metrics"><div><dt>Model calls</dt><dd title="${callTitle(row)}">${row.usage.length ? measuredCalls(row) : "—"}</dd></div><div><dt>Observed tokens</dt><dd>${row.usage.length ? knownTokenLabel(row.usage, row.tokens, "total") : "—"}</dd></div><div><dt>Cost (USD)</dt><dd title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</dd></div></dl><div class="project-card-share"><span>Token share</span><strong>${share(row)}</strong><progress max="${all || 1}" value="${row.tokens}" aria-label="${h(row.project.name)} share of observed tokens"></progress></div></article>`).join("")}</div>${!rows.length ? `<div class="mini-empty">${icon("projects")}<strong>No projects indexed yet</strong><span>Open a workspace or finish a local Copilot CLI or JetBrains session to see it here.</span></div>` : ""}</section>${!embedded && !demo ? '<div class="coverage-note"><span>Projects appear when opened with hoosage, found in this profile’s previously opened local folders, found in VS Code’s stored Chat history, or found in completed local CLI/JetBrains sessions. A new project card does not imply earlier Chat usage.</span></div>' : ""}`;
+  return `${!embedded ? `<section class="projects-intro" aria-label="Project overview"><span class="projects-intro-icon">${icon("projects")}</span><div class="projects-intro-copy"><span class="section-eyebrow">PROJECT INDEX</span><h2>Every project at a glance</h2><p>Usage stays with its own workspace or local session source. Open a project to inspect its overview. To aggregate a known Windows/WSL checkout, run <strong>hoosage: Configure Shared Project Sync</strong> on both hosts.</p></div><div class="projects-intro-stats"><div><strong>${number(rows.length)}</strong><span>indexed</span></div><div><strong>${number(rows.filter((row) => row.usage.length).length)}</strong><span>with records</span></div></div></section>` : ""}<section class="card projects-card" aria-label="Project usage">${embedded ? `<div class="card-heading"><h2>Projects</h2><button class="text-button" data-page="projects">All projects ${icon("arrow")}</button></div>` : `<div class="card-heading projects-heading"><div><span class="section-eyebrow">SELECTED PERIOD</span><h2>Project breakdown</h2></div><span class="small-tag">Most tokens first</span></div>`}<div class="table-scroll"><table><thead><tr><th scope="col">Project</th><th scope="col">Model calls</th><th scope="col">Observed tokens</th><th scope="col">Cost (USD)</th><th scope="col" class="share-column">Token share</th><th scope="col"><span class="sr-only">View project</span></th></tr></thead><tbody>${rows.map((row, i) => `<tr><td><button class="project-link" data-project="${h(row.project.id)}">${projectName(row, i)}</button></td><td title="${callTitle(row)}">${row.usage.length ? measuredCalls(row) : "—"}</td><td class="token-cell" title="${row.usage.length ? (row.missingUsage ? `${count(row.missingUsage, "entry")} with incomplete token data` : "Observed input and output tokens") : "No usage in selected period"}">${row.usage.length ? knownTokenLabel(row.usage, row.tokens, "total") : "—"}</td><td class="cost-cell" title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</td><td class="share-column"><div class="share-cell"><progress max="${h(all || 1)}" value="${h(row.tokens)}" aria-label="${h(row.project.name)} share of observed tokens"></progress><span>${share(row)}</span></div></td><td><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></td></tr>`).join("")}</tbody></table></div><div class="project-cards">${rows.map((row, i) => `<article class="project-card"><div class="project-card-head"><button class="project-link" data-project="${h(row.project.id)}">${projectName(row, i)}</button><button class="icon-button" data-project="${h(row.project.id)}" aria-label="View ${h(row.project.name)} usage">${icon("chevron")}</button></div><dl class="project-card-metrics"><div><dt>Model calls</dt><dd title="${callTitle(row)}">${row.usage.length ? measuredCalls(row) : "—"}</dd></div><div><dt>Observed tokens</dt><dd>${row.usage.length ? knownTokenLabel(row.usage, row.tokens, "total") : "—"}</dd></div><div><dt>Cost (USD)</dt><dd title="${h(costDescription(row.cost))}">${h(costLabel(row.cost))}</dd></div></dl><div class="project-card-share"><span>Token share</span><strong>${share(row)}</strong><progress max="${h(all || 1)}" value="${h(row.tokens)}" aria-label="${h(row.project.name)} share of observed tokens"></progress></div></article>`).join("")}</div>${!rows.length ? `<div class="mini-empty">${icon("projects")}<strong>No projects indexed yet</strong><span>Open a workspace or finish a local Copilot CLI or JetBrains session to see it here.</span></div>` : ""}</section>${!embedded && !demo ? '<div class="coverage-note"><span>Projects appear when opened with hoosage, found in this profile’s previously opened local folders, found in VS Code’s stored Chat history, or found in completed local CLI/JetBrains sessions. A new project card does not imply earlier Chat usage.</span></div>' : ""}`;
 }
 
 function activity(calls: UsageCall[]) {
@@ -827,11 +903,14 @@ root.addEventListener("focusout", (event) => {
   });
 });
 window.addEventListener("message", (event) => {
-  if (event.data?.type === "snapshot") {
+  // VS Code forwards from its same-origin bridge, but masks window.parent as
+  // window itself. A preview has no host API and accepts no host snapshots.
+  if (!api || event.origin !== window.origin) return;
+  if (event.data?.type === "snapshot" && isSnapshot(event.data.snapshot)) {
     const refreshing = refreshTimer !== undefined;
     clearTimeout(refreshTimer);
     refreshTimer = undefined;
-    real = event.data.snapshot as Snapshot;
+    real = event.data.snapshot;
     if (!demo) {
       data = real;
       render();

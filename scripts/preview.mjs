@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 const routes = {
   "/": [
     "text/html",
-    '<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>hoosage — UI preview</title><link rel="stylesheet" href="/app.css"></head><body><div id="app"></div><script src="/webview.js"></script></body></html>',
+    '<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'self\'; script-src \'nonce-hoosage-preview\'; img-src \'self\' data:; font-src \'self\';"><title>hoosage — UI preview</title><link rel="stylesheet" href="/app.css"></head><body><div id="app"></div><script nonce="hoosage-preview" src="/webview.js"></script></body></html>',
   ],
   "/app.css": ["text/css", "media/app.css"],
   "/webview.js": ["text/javascript", "dist/webview.js"],

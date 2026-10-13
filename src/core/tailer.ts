@@ -1,4 +1,4 @@
-import { open, stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 import { parseLine } from "./parser";
 import type { UsageCall } from "./types";
@@ -38,12 +38,12 @@ export class UsageTailer {
     if (this.busy) return;
     this.busy = true;
     try {
-      const info = await stat(this.path).catch((error) => {
+      const file = await open(this.path, "r").catch((error) => {
         if ((error as NodeJS.ErrnoException).code === "ENOENT")
           return undefined;
         throw error;
       });
-      if (!info) {
+      if (!file) {
         // User-deleted history must agree with a fresh scan. Keep rotation
         // deduplication while a replacement exists, but no absent-file usage.
         this.calls.clear();
@@ -58,18 +58,20 @@ export class UsageTailer {
         this.processedLines = 0;
         return;
       }
-      if (this.inode !== info.ino || info.size < this.offset) {
-        this.offset = 0;
-        this.pending = "";
-        this.dropping = false;
-        this.decoder = new StringDecoder("utf8");
-      }
-      this.inode = info.ino;
-      const length = Math.min(BATCH, info.size - this.offset);
-      this.caughtUp = info.size <= this.offset + length;
-      if (!length) return;
-      const file = await open(this.path, "r");
       try {
+        // Size, identity and bytes must come from the same opened file. A
+        // capture can be replaced or removed between filesystem operations.
+        const info = await file.stat();
+        if (this.inode !== info.ino || info.size < this.offset) {
+          this.offset = 0;
+          this.pending = "";
+          this.dropping = false;
+          this.decoder = new StringDecoder("utf8");
+        }
+        this.inode = info.ino;
+        const length = Math.min(BATCH, info.size - this.offset);
+        this.caughtUp = info.size <= this.offset + length;
+        if (!length) return;
         const buffer = Buffer.alloc(length);
         const { bytesRead } = await file.read(buffer, 0, length, this.offset);
         this.offset += bytesRead;
