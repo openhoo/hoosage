@@ -224,6 +224,17 @@ export async function run() {
   assert.ok(diagnostics.includes("Local CLI session scan complete here: yes"));
   assert.ok(!diagnostics.includes(process.env.HOOSAGE_TEST_ENDPOINT!));
   assert.ok(!diagnostics.includes("NEVER_STORE_THIS"));
+  const colorSettings = vscode.workspace.getConfiguration("hoosage");
+  await colorSettings.update(
+    "modelColors",
+    { "Integration model": "#e69f00" },
+    vscode.ConfigurationTarget.Global,
+  );
+  assert.deepEqual(
+    vscode.workspace.getConfiguration("hoosage").get("modelColors"),
+    { "Integration model": "#e69f00" },
+    "Custom model colors persist in the isolated user profile",
+  );
   await vscode.commands.executeCommand("hoosage.open");
   for (
     let attempt = 0;

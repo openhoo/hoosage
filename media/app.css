@@ -965,9 +965,30 @@ h1 span {
 }
 .model-list {
   padding: 4px 24px 0;
+  max-height: 340px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 .model {
+  min-width: 0;
   margin-bottom: 17px;
+  --tone: var(--model-dark);
+}
+body.vscode-light .model,
+body.vscode-high-contrast-light .model {
+  --tone: var(--model-light);
+}
+.model-colors-button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.model-colors-button:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 .model-top {
   display: flex;
@@ -995,6 +1016,7 @@ h1 span {
   border-radius: 6px;
   background: var(--panel-alt);
   font-size: 13px;
+  color: var(--tone);
 }
 .tone-0 {
   --tone: var(--accent);
@@ -1793,7 +1815,7 @@ body.vscode-high-contrast-light .featured .stat-label {
   }
   .models-card .model-list {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 20px;
   }
   .chart {

@@ -774,8 +774,7 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.workspace.getConfiguration("hoosage").get("showStatusBar")
         ? statusBar.show()
         : statusBar.hide();
-      for (const view of views)
-        void view.postMessage({ type: "snapshot", snapshot });
+      for (const view of views) void view.postMessage(dashboardMessage());
       return snapshot;
     })().finally(() => {
       refreshPromise = undefined;
@@ -1183,6 +1182,16 @@ export async function activate(context: vscode.ExtensionContext) {
     );
   }
 
+  function dashboardMessage() {
+    return {
+      type: "snapshot",
+      snapshot,
+      modelColors: vscode.workspace
+        .getConfiguration("hoosage")
+        .get("modelColors", {}),
+    };
+  }
+
   function attach(webview: vscode.Webview) {
     views.add(webview);
     webview.options = {
@@ -1207,7 +1216,7 @@ export async function activate(context: vscode.ExtensionContext) {
         try {
           switch (m.type) {
             case "ready":
-              await webview.postMessage({ type: "snapshot", snapshot });
+              await webview.postMessage(dashboardMessage());
               break;
             case "refresh":
               await refresh();
@@ -1233,6 +1242,12 @@ export async function activate(context: vscode.ExtensionContext) {
               await vscode.commands.executeCommand(
                 "workbench.action.openSettings",
                 "@ext:openhoo.hoosage",
+              );
+              break;
+            case "modelColors":
+              await vscode.commands.executeCommand(
+                "workbench.action.openSettings",
+                "@id:hoosage.modelColors",
               );
               break;
             case "export":

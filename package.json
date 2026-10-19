@@ -128,6 +128,17 @@
     "configuration": {
       "title": "hoosage",
       "properties": {
+        "hoosage.modelColors": {
+          "type": "object",
+          "default": {},
+          "scope": "application",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+            "patternErrorMessage": "Use a hex color such as #0072b2 or #09f."
+          },
+          "markdownDescription": "Custom model colors for the dashboard. Use the exact model name shown in the Models list as the key and a hex color (`#RRGGBB` or `#RGB`) as the value. Applies immediately to all projects in this VS Code profile and to both light and dark themes. Remove an entry to restore its automatic color. Models without an override use a distinct automatic palette."
+        },
         "hoosage.showStatusBar": {
           "type": "boolean",
           "default": true,

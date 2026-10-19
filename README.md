@@ -89,6 +89,28 @@ Filter by project and date range. Sessions are grouped by day and labelled by so
 
 ![Activity filtered to the docs project, with a session expanded to show model, token counts and estimated cost — sample data](media/screenshots/activity.png)
 
+### Model colors
+
+Models use a distinct chart palette with separate shades for light and dark themes.
+Each model keeps its color when you change the project, date range or token ranking.
+The Models card scrolls to show every model in the selected period.
+
+Click **Colors** in the Models card to open **hoosage: Model Colors** in VS Code
+Settings. Add an entry using the exact model name shown in the dashboard and a
+hex color. You can also edit your user `settings.json`:
+
+```json
+"hoosage.modelColors": {
+  "Claude Sonnet 4.6": "#e69f00",
+  "GPT-5.4": "#0072b2"
+}
+```
+
+Changes appear immediately in the dashboard and sidebar for every project in the
+current VS Code profile. Custom colors apply to both themes; choose a shade that
+works with your preferred theme. Remove an entry to restore its automatic color.
+Invalid color values are ignored. These settings control the VS Code dashboard.
+
 ### Usage details
 
 Open **Usage details** directly from the dashboard navigation for explanations of local storage, project attribution, unknown measurements and cost estimates. Keyboard focus stays on the selected control when usage refreshes; manual refresh results are announced to screen readers.

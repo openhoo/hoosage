@@ -19,6 +19,7 @@ import {
 } from "../core/pricing";
 import type { Snapshot, Totals, UsageCall } from "../core/types";
 import { demoSnapshot } from "./demo";
+import { ModelColors, parseModelColors } from "./model-colors";
 
 declare const acquireVsCodeApi:
   | undefined
@@ -55,6 +56,8 @@ let projectId = typeof saved.projectId === "string" ? saved.projectId : "all";
 let demo = false;
 let real: Snapshot | undefined;
 let data: Snapshot | undefined;
+const modelPalette = new ModelColors();
+let modelColors: Record<string, string> = {};
 let expandedSession: string | undefined;
 let visibleSessions = 100;
 const toastRegion = document.createElement("div");
@@ -310,6 +313,7 @@ function dateControls(today: string) {
 
 function render() {
   if (!data) return;
+  modelPalette.register(data.calls.map((call) => call.model));
   if (endDate && periodEnd(data.updatedAt, endDate) === undefined)
     endDate = undefined;
   if (
@@ -321,6 +325,7 @@ function render() {
   const focus = document.activeElement as HTMLElement | null;
   const focusKey = focus?.dataset.focus;
   const scroll = window.scrollY;
+  const modelScroll = root.querySelector(".model-list")?.scrollTop ?? 0;
   if (projectId !== "all" && !data.projects.some((p) => p.id === projectId))
     projectId = "all";
   const calls = selectedCalls();
@@ -348,6 +353,13 @@ function render() {
     ${!demo && data.indexing && page !== "about" ? `<section class="onboarding" aria-busy="true">${icon("activity")}<span class="section-eyebrow">LOCAL USAGE</span><h2>Indexing saved usage…</h2><p>Reading hoosage's saved project records and local sessions. Totals will appear when the scan is complete.</p></section>` : page === "about" ? about() : page === "projects" ? projects(calls) : page === "activity" ? activity(calls) : overview(calls)}
 
     </main></div>`;
+  for (const model of root.querySelectorAll<HTMLElement>("[data-model]")) {
+    const color = modelPalette.get(model.dataset.model!, modelColors);
+    model.style.setProperty("--model-dark", color.dark);
+    model.style.setProperty("--model-light", color.light);
+  }
+  const modelList = root.querySelector(".model-list");
+  if (modelList) modelList.scrollTop = modelScroll;
   // Give every control a stable identity so incoming snapshots preserve keyboard focus.
   const identities = new Map<string, number>();
   for (const control of root.querySelectorAll<HTMLElement>(
@@ -394,7 +406,7 @@ function overview(calls: UsageCall[]) {
     <article class="stat"><div class="stat-label">Input tokens ${icon("download")}</div><div class="stat-number">${knownTokenLabel(calls, t.input, "input")}</div><div class="stat-foot">${knownTokenLabel(calls, t.cacheRead, "cacheRead")} cached${calls.some((c) => c.cacheRead === undefined) ? " · partial" : ""}</div></article>
     <article class="stat"><div class="stat-label">Output tokens ${icon("arrow")}</div><div class="stat-number">${knownTokenLabel(calls, t.output, "output")}</div><div class="stat-foot">${calls.some((c) => c.durationMs !== undefined) ? `${(t.avgDurationMs / 1000).toFixed(1)}s avg. timed call` : "No timing data"}</div></article>
   </section>
-  <div class="charts"><section class="card chart-card"><div class="card-heading"><h2>Tokens over time</h2><div class="legend"><span><i class="input-color"></i>Input</span><span><i class="output-color"></i>Output</span></div></div>${chart(calls)}</section><section class="card models-card"><div class="card-heading"><h2>Models</h2><span class="small-tag">Observed share</span></div>${modelMix(calls)}</section></div>
+  <div class="charts"><section class="card chart-card"><div class="card-heading"><h2>Tokens over time</h2><div class="legend"><span><i class="input-color"></i>Input</span><span><i class="output-color"></i>Output</span></div></div>${chart(calls)}</section><section class="card models-card"><div class="card-heading"><h2>Models</h2><button class="model-colors-button" data-action="modelColors" title="Customize model colors in settings">Colors</button></div>${modelMix(calls)}</section></div>
   ${projects(calls, true)}
   <div class="coverage-note"><span>${price.estimatedCalls ? "≈ Estimated cost · " : ""}${price.unpricedCalls ? "+ Excludes unpriced usage · " : ""}<button class="text-button" data-page="about">Usage details ${icon("arrow")}</button></span></div>`;
 }
@@ -422,16 +434,13 @@ function modelMix(calls: UsageCall[]) {
   const total = totals(calls).tokens;
   if (!models.length)
     return `<div class="mini-empty">${icon("bolt")}No model usage in this period.</div>`;
-  return `<div class="model-list">${models
-    .slice(0, 4)
-    .map((m, i) => {
+  return `<div class="model-list" tabindex="0" data-focus="model-list" role="region" aria-label="Model shares by observed tokens">${models
+    .map((m) => {
       const modelCalls = calls.filter((c) => c.model === m.model);
       const price = costs(modelCalls);
-      return `<div class="model"><div class="model-top"><span class="model-avatar tone-${i}">${h(m.model.slice(0, 1).toUpperCase())}</span><strong title="${h(m.model)}">${h(m.model)}</strong><span>${total ? `${Math.round((m.tokens / total) * 100)}%` : "—"}</span></div><progress class="model-progress tone-${i}" max="${h(total || 1)}" value="${h(m.tokens)}" aria-label="${h(m.model)} share of observed tokens"></progress><div class="model-meta"><span>${callCount(m)} · ${knownTokenLabel(modelCalls, m.tokens, "total")} observed tokens</span><strong class="model-cost" title="${h(costDescription(price))}">${h(costLabel(price))}</strong></div></div>`;
+      return `<div class="model" data-model="${h(m.model)}"><div class="model-top"><span class="model-avatar" aria-hidden="true">${h(m.model.slice(0, 1).toUpperCase())}</span><strong title="${h(m.model)}">${h(m.model)}</strong><span>${total ? `${Math.round((m.tokens / total) * 100)}%` : "—"}</span></div><progress class="model-progress" max="${h(total || 1)}" value="${h(m.tokens)}" aria-label="${h(m.model)} share of observed tokens"></progress><div class="model-meta"><span>${callCount(m)} · ${knownTokenLabel(modelCalls, m.tokens, "total")} observed tokens</span><strong class="model-cost" title="${h(costDescription(price))}">${h(costLabel(price))}</strong></div></div>`;
     })
-    .join(
-      "",
-    )}</div>${models.length > 4 ? `<p class="muted">+ ${models.length - 4} more models · see Activity</p>` : ""}`;
+    .join("")}</div>`;
 }
 
 function projectDescription(
@@ -823,6 +832,16 @@ root.addEventListener("click", (event) => {
     }, 10000);
     return;
   }
+  if (action === "modelColors" && !api) {
+    announce(
+      "Customize model colors in VS Code Settings → hoosage → Model Colors.",
+    );
+    return;
+  }
+  if (action === "modelColors") {
+    send("modelColors");
+    return;
+  }
   if (demo && action !== "open") {
     announce("Exit preview to change settings.");
     return;
@@ -911,11 +930,10 @@ window.addEventListener("message", (event) => {
     clearTimeout(refreshTimer);
     refreshTimer = undefined;
     real = event.data.snapshot;
-    if (!demo) {
-      data = real;
-      render();
-      if (refreshing) announce("Usage refreshed.");
-    }
+    modelColors = parseModelColors(event.data.modelColors);
+    if (!demo) data = real;
+    render();
+    if (refreshing && !demo) announce("Usage refreshed.");
   }
 });
 if (api) send("ready");
