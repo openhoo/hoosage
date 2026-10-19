@@ -1,5 +1,6 @@
 import {
   byModel,
+  calendarMonthBounds,
   customDateBounds,
   filterCallsBetween,
   groupSessions,
@@ -47,11 +48,19 @@ let customStartDate =
   typeof saved.customStartDate === "string" ? saved.customStartDate : "";
 let customEndDate =
   typeof saved.customEndDate === "string" ? saved.customEndDate : "";
-let rangeMode: "preset" | "custom" =
-  saved.rangeMode === "custom" &&
-  customDateBounds(Date.now(), customStartDate, customEndDate)
-    ? "custom"
-    : "preset";
+type RangeMode = "preset" | "custom" | "month";
+let selectedMonth =
+  typeof saved.selectedMonth === "string" &&
+  calendarMonthBounds(Date.now(), saved.selectedMonth)
+    ? saved.selectedMonth
+    : undefined;
+let rangeMode: RangeMode =
+  saved.rangeMode === "month"
+    ? "month"
+    : saved.rangeMode === "custom" &&
+        customDateBounds(Date.now(), customStartDate, customEndDate)
+      ? "custom"
+      : "preset";
 let projectId = typeof saved.projectId === "string" ? saved.projectId : "all";
 let demo = false;
 let real: Snapshot | undefined;
@@ -69,6 +78,7 @@ root.after(toastRegion);
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 let calendarOpen = false;
+let pickerView: "dates" | "months" = "dates";
 let calendarMonth = "";
 let calendarFocusDate = "";
 let draftStartDate = "";
@@ -215,6 +225,7 @@ function save() {
     customStartDate,
     customEndDate,
     rangeMode,
+    selectedMonth,
     projectId,
   });
 }
@@ -240,6 +251,8 @@ function selectedCalls() {
 
 function selectedBounds() {
   const now = data?.updatedAt ?? Date.now();
+  if (rangeMode === "month")
+    return calendarMonthBounds(now, selectedMonth) ?? calendarMonthBounds(now)!;
   if (rangeMode === "custom") {
     const custom = customDateBounds(now, customStartDate, customEndDate);
     if (custom) return custom;
@@ -304,11 +317,45 @@ function calendarPicker(today: string) {
   </div>`;
 }
 
+function monthPicker(today: string) {
+  const year = Number(calendarMonth.slice(0, 4));
+  const currentMonth = today.slice(0, 7);
+  const selected = rangeMode === "month" ? (selectedMonth ?? currentMonth) : "";
+  const months = Array.from({ length: 12 }, (_, index) => {
+    const key = `${String(year).padStart(4, "0")}-${String(index + 1).padStart(2, "0")}`;
+    const label = new Intl.DateTimeFormat("en", { month: "short" }).format(
+      new Date(year, index, 1),
+    );
+    const fullLabel = new Intl.DateTimeFormat("en", {
+      month: "long",
+      year: "numeric",
+    }).format(new Date(year, index, 1));
+    return `<button type="button" class="month-option" data-calendar-month="${key}" data-focus="month-${key}" tabindex="${calendarFocusDate.slice(0, 7) === key ? 0 : -1}" aria-label="${h(fullLabel)}${key === currentMonth ? ", month to date" : ""}" aria-pressed="${selected === key}" ${key > currentMonth ? "disabled" : ""}>${label}${key === currentMonth ? '<span class="month-current">to date</span>' : ""}</button>`;
+  }).join("");
+  return `<div class="calendar-popover" id="date-range-picker" role="dialog" aria-label="Choose month" aria-describedby="month-instructions">
+    <p id="month-instructions" class="sr-only">Use arrow keys to move between months, Home or End to jump within the year, and Page Up or Page Down to change year. Press Enter to show a month or Escape to cancel.</p>
+    <div class="calendar-top"><div><span class="calendar-eyebrow">MONTHLY USAGE</span><h2>Choose a month</h2></div><button type="button" class="calendar-close" data-calendar-action="cancel" aria-label="Close month picker">×</button></div>
+    <div class="calendar-month-bar"><div class="calendar-month-nav"><button type="button" data-month-year="-1" data-focus="month-prev-year" aria-label="Previous year" ${year <= 100 ? "disabled" : ""}>‹</button></div><h3 id="month-year-title" aria-live="polite" aria-atomic="true">${year}</h3><div class="calendar-month-nav"><button type="button" data-month-year="1" data-focus="month-next-year" aria-label="Next year" ${year >= Number(today.slice(0, 4)) ? "disabled" : ""}>›</button></div></div>
+    <div class="month-grid" role="group" aria-labelledby="month-year-title">${months}</div>
+    <p class="month-help">Past months include every day. This month updates through today.</p>
+    <button type="button" class="button month-shortcut" data-calendar-action="this-month">Show this month ${icon("arrow")}</button>
+  </div>`;
+}
+
 function dateControls(today: string) {
   const bounds = selectedBounds();
   const start = localDateKey(bounds.start);
   const end = localDateKey(bounds.end);
-  return `<div class="range" role="group" aria-label="Period length">${[7, 14, 30].map((value) => `<button type="button" data-focus="days-${value}" data-days="${value}" aria-pressed="${rangeMode === "preset" && days === value}">${value} days</button>`).join("")}<button type="button" data-calendar-action="custom" data-focus="days-custom" aria-pressed="${rangeMode === "custom"}">Custom</button></div><div class="date-nav" role="group" aria-label="Browse calendar history"><button type="button" class="date-step previous" data-shift="previous" data-focus="previous" aria-label="Previous ${bounds.days} days" title="Previous ${bounds.days} days">${icon("chevron")}</button><button type="button" class="date-trigger" data-calendar-action="open" data-focus="calendar-trigger" aria-label="Choose date range, ${h(rangeLabel(start, end))}" aria-expanded="${calendarOpen}" aria-controls="date-range-picker">${icon("calendar")}<span><small>DATE RANGE</small><strong>${h(rangeLabel(start, end))}</strong></span>${icon("chevron")}</button><button type="button" class="date-step" data-shift="next" data-focus="next" aria-label="Next ${bounds.days} days" title="Next ${bounds.days} days" ${end >= today ? "disabled" : ""}>${icon("chevron")}</button>${calendarOpen ? `<div class="calendar-backdrop" data-calendar-action="cancel" aria-hidden="true"></div>${calendarPicker(today)}` : ""}</div>`;
+  const thisMonth = rangeMode === "month" && !selectedMonth;
+  const step = rangeMode === "month" ? "month" : `${bounds.days} days`;
+  const trigger = rangeMode === "month" ? "Choose month" : "Choose date range";
+  const caption =
+    rangeMode === "month"
+      ? thisMonth
+        ? "MONTH TO DATE"
+        : "CALENDAR MONTH"
+      : "DATE RANGE";
+  return `<div class="range" role="group" aria-label="Usage period"><button type="button" data-calendar-action="this-month" data-focus="this-month" aria-pressed="${thisMonth}">This month</button><button type="button" data-calendar-action="month" data-focus="choose-month" aria-pressed="${rangeMode === "month" && !thisMonth}">Month…</button>${[7, 14, 30].map((value) => `<button type="button" data-focus="days-${value}" data-days="${value}" aria-pressed="${rangeMode === "preset" && days === value}">${value} days</button>`).join("")}<button type="button" data-calendar-action="custom" data-focus="days-custom" aria-pressed="${rangeMode === "custom"}">Custom</button></div><div class="date-nav" role="group" aria-label="Browse calendar history"><button type="button" class="date-step previous" data-shift="previous" data-focus="previous" aria-label="Previous ${step}" title="Previous ${step}">${icon("chevron")}</button><button type="button" class="date-trigger" data-calendar-action="open" data-focus="calendar-trigger" aria-label="${trigger}, ${h(rangeLabel(start, end))}" aria-expanded="${calendarOpen}" aria-controls="date-range-picker">${icon("calendar")}<span><small>${caption}</small><strong>${h(rangeLabel(start, end))}</strong></span>${icon("chevron")}</button><button type="button" class="date-step" data-shift="next" data-focus="next" aria-label="Next ${step}" title="Next ${step}" ${end >= today ? "disabled" : ""}>${icon("chevron")}</button>${calendarOpen ? `<div class="calendar-backdrop" data-calendar-action="cancel" aria-hidden="true"></div>${pickerView === "months" ? monthPicker(today) : calendarPicker(today)}` : ""}</div>`;
 }
 
 function render() {
@@ -316,6 +363,8 @@ function render() {
   modelPalette.register(data.calls.map((call) => call.model));
   if (endDate && periodEnd(data.updatedAt, endDate) === undefined)
     endDate = undefined;
+  if (selectedMonth && !calendarMonthBounds(data.updatedAt, selectedMonth))
+    selectedMonth = undefined;
   if (
     rangeMode === "custom" &&
     !customDateBounds(data.updatedAt, customStartDate, customEndDate)
@@ -558,8 +607,13 @@ function focusCalendarDay() {
     ?.focus({ preventScroll: true });
 }
 
-function openCalendar(mode: "preset" | "custom" = rangeMode) {
+function openCalendar(mode: RangeMode = rangeMode) {
+  if (mode === "month") {
+    openMonthPicker();
+    return;
+  }
   const bounds = selectedBounds();
+  pickerView = "dates";
   draftStartDate = localDateKey(bounds.start);
   draftEndDate = localDateKey(bounds.end);
   draftMode = mode;
@@ -569,6 +623,63 @@ function openCalendar(mode: "preset" | "custom" = rangeMode) {
   calendarOpen = true;
   render();
   focusCalendarDay();
+}
+
+function openMonthPicker() {
+  calendarMonth = `${localDateKey(selectedBounds().end).slice(0, 7)}-01`;
+  calendarFocusDate = calendarMonth;
+  pickerView = "months";
+  calendarOpen = true;
+  render();
+  focusMonth();
+}
+
+function focusMonth() {
+  root
+    .querySelector<HTMLElement>(
+      `[data-calendar-month="${calendarFocusDate.slice(0, 7)}"]`,
+    )
+    ?.focus({ preventScroll: true });
+}
+
+function applyMonth(month?: string) {
+  const today = localDateKey(data!.updatedAt);
+  if (!calendarMonthBounds(data!.updatedAt, month)) return;
+  selectedMonth = month === today.slice(0, 7) ? undefined : month;
+  rangeMode = "month";
+  visibleSessions = 100;
+  const restoreFocus = calendarOpen;
+  calendarOpen = false;
+  save();
+  render();
+  if (restoreFocus)
+    root.querySelector<HTMLElement>('[data-focus="calendar-trigger"]')?.focus({
+      preventScroll: true,
+    });
+  const bounds = selectedBounds();
+  announce(
+    `Showing ${rangeLabel(localDateKey(bounds.start), localDateKey(bounds.end))}.`,
+  );
+}
+
+function moveMonthFocus(months: number, focusKey?: string) {
+  const [year, month] = calendarFocusDate.split("-").map(Number);
+  const next = new Date(year!, month! - 1 + months, 1);
+  const today = localDateKey(data!.updatedAt);
+  if (
+    next.getFullYear() < 100 ||
+    next.getFullYear() > Number(today.slice(0, 4))
+  )
+    return;
+  const key = localDateKey(next.getTime());
+  calendarMonth = `${key > today ? today.slice(0, 7) : key.slice(0, 7)}-01`;
+  calendarFocusDate = calendarMonth;
+  render();
+  const control = focusKey
+    ? root.querySelector<HTMLButtonElement>(`[data-focus="${focusKey}"]`)
+    : undefined;
+  if (control && !control.disabled) control.focus({ preventScroll: true });
+  else focusMonth();
 }
 
 function closeCalendar() {
@@ -615,7 +726,7 @@ function moveCalendarFocus(key: string) {
 
 root.addEventListener("click", (event) => {
   const button = (event.target as Element).closest<HTMLElement>(
-    "[data-action],[data-page],[data-days],[data-shift],[data-project],[data-session],[data-calendar-action],[data-calendar-nav],[data-calendar-boundary],[data-calendar-day]",
+    "[data-action],[data-page],[data-days],[data-shift],[data-project],[data-session],[data-calendar-action],[data-calendar-nav],[data-calendar-boundary],[data-calendar-day],[data-calendar-month],[data-month-year]",
   );
   if (!button) return;
   event.preventDefault();
@@ -623,7 +734,9 @@ root.addEventListener("click", (event) => {
     button.dataset.calendarAction ||
     button.dataset.calendarNav ||
     button.dataset.calendarBoundary ||
-    button.dataset.calendarDay
+    button.dataset.calendarDay ||
+    button.dataset.calendarMonth ||
+    button.dataset.monthYear
   )
     event.stopPropagation();
   if (button.dataset.calendarAction === "open") {
@@ -633,6 +746,22 @@ root.addEventListener("click", (event) => {
   }
   if (button.dataset.calendarAction === "custom") {
     openCalendar("custom");
+    return;
+  }
+  if (button.dataset.calendarAction === "this-month") {
+    applyMonth();
+    return;
+  }
+  if (button.dataset.calendarAction === "month") {
+    openMonthPicker();
+    return;
+  }
+  if (button.dataset.calendarMonth) {
+    applyMonth(button.dataset.calendarMonth);
+    return;
+  }
+  if (button.dataset.monthYear) {
+    moveMonthFocus(Number(button.dataset.monthYear) * 12, button.dataset.focus);
     return;
   }
   if (button.dataset.calendarAction === "cancel") {
@@ -720,9 +849,10 @@ root.addEventListener("click", (event) => {
   }
   if (button.dataset.days) {
     days = Number(button.dataset.days);
-    if (rangeMode === "custom") {
+    if (rangeMode !== "preset") {
       const today = localDateKey(data!.updatedAt);
-      endDate = customEndDate === today ? undefined : customEndDate;
+      const selectedEnd = localDateKey(selectedBounds().end);
+      endDate = selectedEnd === today ? undefined : selectedEnd;
     }
     rangeMode = "preset";
     calendarOpen = false;
@@ -735,7 +865,17 @@ root.addEventListener("click", (event) => {
     const today = localDateKey(data!.updatedAt);
     const span = selectedBounds().days;
     const direction = button.dataset.shift === "previous" ? -1 : 1;
-    if (rangeMode === "custom") {
+    if (rangeMode === "month") {
+      const [year, month] = (selectedMonth ?? today.slice(0, 7))
+        .split("-")
+        .map(Number);
+      applyMonth(
+        localDateKey(
+          new Date(year!, month! - 1 + direction, 1).getTime(),
+        ).slice(0, 7),
+      );
+      return;
+    } else if (rangeMode === "custom") {
       const shiftedEnd = shiftLocalDate(customEndDate, direction * span);
       const nextEnd = shiftedEnd && shiftedEnd > today ? today : shiftedEnd;
       if (nextEnd) {
@@ -809,11 +949,13 @@ root.addEventListener("click", (event) => {
       announce(exportReason);
       return;
     }
+    const bounds = selectedBounds();
     send("export", {
       projectId: page === "projects" ? "all" : projectId,
       days,
-      endDate: rangeMode === "custom" ? customEndDate : endDate,
-      startDate: rangeMode === "custom" ? customStartDate : undefined,
+      endDate: rangeMode === "preset" ? endDate : localDateKey(bounds.end),
+      startDate:
+        rangeMode === "preset" ? undefined : localDateKey(bounds.start),
       format: "csv",
     });
     return;
@@ -864,6 +1006,24 @@ root.addEventListener("keydown", (event) => {
     event.preventDefault();
     event.stopPropagation();
     closeCalendar();
+    return;
+  }
+  if (target.dataset.calendarMonth) {
+    const month = Number(calendarFocusDate.slice(5, 7));
+    const steps: Record<string, number> = {
+      ArrowLeft: -1,
+      ArrowRight: 1,
+      ArrowUp: -3,
+      ArrowDown: 3,
+      Home: 1 - month,
+      End: 12 - month,
+      PageUp: -12,
+      PageDown: 12,
+    };
+    if (Object.hasOwn(steps, event.key)) {
+      event.preventDefault();
+      moveMonthFocus(steps[event.key]!);
+    }
     return;
   }
   if (!target.dataset.calendarDay) return;

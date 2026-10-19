@@ -135,15 +135,22 @@ try {
     return response.result.value;
   };
   const key = async (value, modifiers = 0) => {
+    const nativeKey =
+      value === "Enter"
+        ? { code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
+        : {};
     await send("Input.dispatchKeyEvent", {
       type: "keyDown",
       key: value,
       modifiers,
+      ...nativeKey,
+      ...(value === "Enter" ? { text: "\r", unmodifiedText: "\r" } : {}),
     });
     await send("Input.dispatchKeyEvent", {
       type: "keyUp",
       key: value,
       modifiers,
+      ...nativeKey,
     });
   };
   const screenshot = async (name) => {
@@ -184,6 +191,10 @@ try {
       clickCount: 1,
     });
   };
+  const visibleRange = () =>
+    evaluate(
+      `document.querySelector(".chart").getAttribute("aria-label").match(/from (\\d{4}-\\d{2}-\\d{2}) to (\\d{4}-\\d{2}-\\d{2})/).slice(1)`,
+    );
   await send("Runtime.enable");
   await send("Page.enable");
   await send("Log.enable");
@@ -220,6 +231,134 @@ try {
       await screenshot(`${width}-${page}`);
     }
     await click('[data-page="overview"]');
+    await click('[data-focus="this-month"]');
+    const monthly = await evaluate(`(() => {
+      const now = new Date();
+      const key = d => [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
+      const year = now.getFullYear() - 1;
+      return { today: key(now), start: key(new Date(now.getFullYear(), now.getMonth(), 1)), year, febEnd: key(new Date(year, 2, 0)), janEnd: key(new Date(year, 1, 0)) };
+    })()`);
+    assert.deepEqual(
+      await visibleRange(),
+      [monthly.start, monthly.today],
+      `${width}px: This month applies the first through today in one click`,
+    );
+    assert.equal(
+      await evaluate(
+        'document.querySelector("[data-focus=this-month]").getAttribute("aria-pressed")',
+      ),
+      "true",
+    );
+    assert.equal(
+      await evaluate('document.querySelector("[data-shift=next]").disabled'),
+      true,
+      `${width}px: monthly paging stops at this month`,
+    );
+    await screenshot(`${width}-month-to-date`);
+    await click('[data-focus="choose-month"]');
+    assert.equal(
+      await evaluate("document.activeElement.dataset.calendarMonth"),
+      monthly.today.slice(0, 7),
+      `${width}px: month picker focuses the selected month`,
+    );
+    assert.equal(
+      await evaluate("document.documentElement.scrollWidth <= innerWidth"),
+      true,
+      `${width}px: month picker has no horizontal overflow`,
+    );
+    assert.equal(
+      await evaluate(
+        `[...document.querySelectorAll("[data-calendar-month]")].filter(node => node.dataset.calendarMonth > ${JSON.stringify(monthly.today.slice(0, 7))}).every(node => node.disabled)`,
+      ),
+      true,
+      `${width}px: future months are disabled`,
+    );
+    await key("PageUp");
+    assert.equal(
+      await evaluate(
+        "Number(document.activeElement.dataset.calendarMonth.slice(0, 4))",
+      ),
+      monthly.year,
+      `${width}px: Page Up changes month-picker year`,
+    );
+    await key("PageDown");
+    await key("Home");
+    assert.equal(
+      await evaluate("document.activeElement.dataset.calendarMonth.slice(5)"),
+      "01",
+      `${width}px: Home focuses January`,
+    );
+    await key("End");
+    assert.equal(
+      await evaluate("document.activeElement.dataset.calendarMonth"),
+      monthly.today.slice(0, 7),
+      `${width}px: End stops at the current month`,
+    );
+    await key("Escape");
+    assert.equal(
+      await evaluate("document.activeElement.dataset.focus"),
+      "calendar-trigger",
+      `${width}px: month picker restores focus after Escape`,
+    );
+    await click('[data-focus="choose-month"]');
+    await screenshot(`${width}-month-picker`);
+    await click('[data-month-year="-1"]');
+    assert.equal(
+      await evaluate('document.querySelector("#month-year-title").textContent'),
+      String(monthly.year),
+      `${width}px: previous year remains open`,
+    );
+    await click('[data-month-year="1"]');
+    assert.equal(
+      await evaluate('Boolean(document.querySelector(".calendar-popover"))'),
+      true,
+      `${width}px: advancing to the current year keeps the month picker open`,
+    );
+    assert.equal(
+      await evaluate("document.activeElement.dataset.calendarMonth"),
+      monthly.today.slice(0, 7),
+      `${width}px: a disabled next-year button returns focus to a month`,
+    );
+    await key("PageUp");
+    if (width === 1408) {
+      await key("Home");
+      await key("ArrowRight");
+      await key("ArrowDown");
+      await key("ArrowUp");
+      assert.equal(
+        await evaluate("document.activeElement.dataset.calendarMonth"),
+        `${monthly.year}-02`,
+        "arrow keys navigate the month grid",
+      );
+      await key("Enter");
+    } else await click(`[data-calendar-month="${monthly.year}-02"]`);
+    assert.deepEqual(
+      await visibleRange(),
+      [`${monthly.year}-02-01`, monthly.febEnd],
+      `${width}px: choosing February immediately applies a complete calendar month`,
+    );
+    assert.equal(
+      await evaluate('Boolean(document.querySelector(".calendar-popover"))'),
+      false,
+    );
+    assert.equal(
+      await evaluate("document.activeElement.dataset.focus"),
+      "calendar-trigger",
+    );
+    await click('[data-shift="previous"]');
+    assert.deepEqual(
+      await visibleRange(),
+      [`${monthly.year}-01-01`, monthly.janEnd],
+      `${width}px: previous month uses January's actual length`,
+    );
+    await click('[data-shift="next"]');
+    assert.deepEqual(
+      await visibleRange(),
+      [`${monthly.year}-02-01`, monthly.febEnd],
+      `${width}px: month paging round-trips across different month lengths`,
+    );
+    await click('[data-focus="this-month"]');
+    await click('[data-days="14"]');
     await click('[data-focus="calendar-trigger"]');
     const focusedDay = await evaluate(
       "document.activeElement.dataset.calendarDay",
@@ -1147,6 +1286,138 @@ try {
       identifier: stateScript.identifier,
     });
   }
+  // A restored month selection must use local boundaries for totals and export.
+  for (const scenario of [
+    { timezone: "Europe/Berlin", month: "2026-03", days: 31 },
+    { timezone: "America/Los_Angeles", month: "2025-11", days: 30 },
+    { timezone: "Europe/Berlin", month: "2024-02", days: 29 },
+    { timezone: "America/Los_Angeles", month: "2025-12", days: 31 },
+  ]) {
+    await send("Emulation.setTimezoneOverride", {
+      timezoneId: scenario.timezone,
+    });
+    const stateScript = await send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `window.fixtureState = ${JSON.stringify({ page: "overview", days: 14, rangeMode: "month", selectedMonth: scenario.month })};`,
+    });
+    await send("Page.navigate", { url });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const timestamps = await evaluate(`(() => {
+      const [y, m] = ${JSON.stringify(scenario.month)}.split("-").map(Number);
+      const start = new Date(y, m - 1, 1).getTime();
+      const afterEnd = new Date(y, m, 1).getTime();
+      return [start - 1, start, afterEnd - 1, afterEnd];
+    })()`);
+    const monthFixture = {
+      ...fixture,
+      calls: timestamps.map((timestamp, i) => ({
+        id: `month-boundary-${i}`,
+        projectId: "synthetic",
+        timestamp,
+        model: "Synthetic monthly model",
+        input: 1,
+        output: 2,
+        nanoAiu: 100_000_000_000,
+        failed: false,
+      })),
+    };
+    await snapshot(monthFixture);
+    const expected = [
+      `${scenario.month}-01`,
+      `${scenario.month}-${scenario.days}`,
+    ];
+    assert.deepEqual(
+      await visibleRange(),
+      expected,
+      `${scenario.timezone}: saved month restores its exact local dates`,
+    );
+    assert.equal(
+      await evaluate(
+        'document.querySelectorAll(".stat-number")[2].textContent',
+      ),
+      "2",
+      `${scenario.timezone}: month totals include both edges and exclude adjacent calls`,
+    );
+    assert.equal(
+      await evaluate(
+        'document.querySelectorAll(".stat-number")[0].textContent',
+      ),
+      "$2.00",
+      `${scenario.timezone}: cost uses the same monthly boundaries`,
+    );
+    await click('[data-action="export"]');
+    const exported = await evaluate(
+      'window.hostMessages.findLast(message => message.type === "export")',
+    );
+    assert.equal(
+      exported.startDate,
+      expected[0],
+      "monthly export matches the displayed first day",
+    );
+    assert.equal(
+      exported.endDate,
+      expected[1],
+      "monthly export matches the displayed last day",
+    );
+    await click('[data-shift="previous"]');
+    await click('[data-shift="next"]');
+    assert.deepEqual(
+      await visibleRange(),
+      expected,
+      `${scenario.timezone}: month paging round-trips across DST, leap days and year boundaries`,
+    );
+    assert.equal(
+      await evaluate("window.savedState.selectedMonth"),
+      scenario.month,
+      "a past month stays selected in saved state",
+    );
+    await send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: stateScript.identifier,
+    });
+  }
+  // "This month" is a live choice, including across day and month rollovers.
+  await send("Emulation.setTimezoneOverride", { timezoneId: "Europe/Berlin" });
+  const liveMonthScript = await send("Page.addScriptToEvaluateOnNewDocument", {
+    source:
+      'window.fixtureState = { page: "overview", days: 14, rangeMode: "month" };',
+  });
+  await send("Page.navigate", { url });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  for (const [year, month, day, expectedStart] of [
+    [2025, 12, 31, "2025-12-01"],
+    [2026, 1, 1, "2026-01-01"],
+    [2026, 1, 2, "2026-01-01"],
+    [2026, 2, 1, "2026-02-01"],
+  ]) {
+    const updatedAt = await evaluate(
+      `new Date(${year}, ${month - 1}, ${day}, 12).getTime()`,
+    );
+    await snapshot({
+      ...fixture,
+      updatedAt,
+      calls: [{ ...fixture.calls[0], timestamp: updatedAt }],
+    });
+    const end = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    assert.deepEqual(
+      await visibleRange(),
+      [expectedStart, end],
+      "This month follows new days, months and years after reopening",
+    );
+    await click('[data-focus="this-month"]');
+    assert.equal(
+      await evaluate("window.savedState.selectedMonth"),
+      undefined,
+      "This month persists a live choice instead of freezing a month key",
+    );
+    await click('[data-action="export"]');
+    const exported = await evaluate(
+      'window.hostMessages.findLast(message => message.type === "export")',
+    );
+    assert.equal(exported.startDate, expectedStart);
+    assert.equal(exported.endDate, end);
+  }
+  await send("Page.removeScriptToEvaluateOnNewDocument", {
+    identifier: liveMonthScript.identifier,
+  });
   await send("Emulation.setDeviceMetricsOverride", {
     width: 1408,
     height: 900,
@@ -1207,7 +1478,7 @@ try {
     "dashboard runs under its strict local-asset CSP",
   );
   console.log(
-    "Dashboard navigation, responsive layouts, calendar keyboard/mouse and DST behavior, pagination, unknown usage, strict CSP and escaping, live announcements, focus preservation, and loading/empty/error states passed.",
+    "Dashboard navigation, responsive layouts, calendar and month-picker keyboard/mouse, monthly totals/export and live rollover, DST behavior, pagination, unknown usage, strict CSP and escaping, live announcements, focus preservation, and loading/empty/error states passed.",
   );
 } finally {
   socket?.close();

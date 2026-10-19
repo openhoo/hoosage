@@ -391,6 +391,8 @@ h1 span {
   border-radius: 7px;
   display: flex;
   gap: 3px;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 .range button {
   font-size: 12px;
@@ -594,6 +596,44 @@ h1 span {
 .calendar-month-nav button:hover:not(:disabled) {
   border-color: var(--line);
   background: var(--panel-alt);
+}
+.month-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.month-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 54px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-alt);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+.month-option:hover:not(:disabled),
+.month-option[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.month-current {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.month-help {
+  margin: 16px 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.month-shortcut {
+  width: 100%;
+  justify-content: space-between;
 }
 .calendar-weekdays,
 .calendar-grid {
@@ -2049,6 +2089,8 @@ body.vscode-high-contrast-light .featured .stat-label {
   }
   .range {
     width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .range button {
     flex: 1 1 0;

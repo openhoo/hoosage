@@ -56,7 +56,7 @@ Want a look first? **Explore a preview** shows clearly labelled sample data. Sam
 - Costs in USD for the overview, projects, models, sessions and status bar.
 - Observed input/output tokens, model calls, linked sessions and average call duration.
 - Usage charts with readable intervals for long periods, model shares and a project comparison that keeps every metric visible on narrow screens.
-- 7-, 14- and 30-day presets, a custom from/to calendar range, project selection and session drilldowns.
+- One-click month-to-date usage, a month picker with calendar-month navigation, 7-, 14- and 30-day presets, custom dates, project selection and session drilldowns.
 - CSV export of the selected project and period, including cost source and price-table date; unknown values stay empty.
 - A status bar indicator for today's current-project usage.
 - No hoosage account, cloud backend, credentials or outbound analytics.
@@ -64,9 +64,15 @@ Want a look first? **Explore a preview** shows clearly labelled sample data. Sam
 
 ## Screenshots
 
+### Monthly usage
+
+Click **This month** for usage from the first of the current month through the latest update. Choose **Month…** to select any past month directly; the toolbar arrows then move by whole calendar months. Exact dates remain visible.
+
+![Month picker with a year of months and month-to-date usage — sample data](media/screenshots/months.png)
+
 ### Date range picker
 
-Choose exact start and end dates, jump by month or year, or move the selected period with the toolbar arrows. The calendar works with keyboard navigation and adapts to narrow windows.
+Choose exact start and end dates with **Custom**, jump by month or year, or move the selected period with the toolbar arrows. Both pickers work with keyboard navigation and adapt to narrow windows.
 
 ![Custom date range calendar showing highlighted start and end dates and the selected span — sample data](media/screenshots/calendar.png)
 
@@ -134,7 +140,7 @@ Cache reads are displayed separately as reported by Copilot; they are **not adde
 
 The extension does **not** report your invoice, remaining monthly allowance, premium requests, inline completion usage, history VS Code has already removed, other machines or GitHub cloud-agent activity. Background agents are included only when their chat spans reach the configured endpoint.
 
-The dashboard offers 7, 14 and 30-day presets plus a **Custom** from/to range. Open the date-range picker to choose the start and end on a calendar; its month and year controls can jump to older history. The previous/next buttons move the whole selected period, stopping at today. The calendar supports arrow keys, Home/End, Page Up/Down (hold Shift to jump a year), Enter and Escape. Long ranges are grouped into legible chart intervals without changing totals. The project list always shows all projects for the selected period. CSV export uses the same period and project selection as the page. Chat calls are assigned to their start date; CLI tokens and request counts are assigned to their shutdown date, and CLI cost to the usage checkpoint or shutdown that reported it. Chat usage updates after Copilot exports completed spans; CLI cost appears with the CLI's periodic usage checkpoints (including still-running sessions), tokens and request counts after session shutdown. hoosage polls local history every five seconds.
+The dashboard offers **This month**, **Month…**, 7, 14 and 30-day presets, and a **Custom** from/to range. **This month** starts at local midnight on the first and updates through today, including after reopening the dashboard or crossing into a new month. **Month…** shows a year of months: select one to see its full usage immediately, with the current month ending at the latest update. In monthly mode, the previous/next buttons move by whole calendar months, respecting different month lengths and leap years. In other modes, they move the selected number of days, stopping at today. Open **Custom** to choose exact start and end dates. Both pickers support arrow keys, Home/End, Page Up/Down, Enter and Escape; in the date calendar, hold Shift with Page Up/Down to jump a year. Dates use the local timezone. Long ranges are grouped into legible chart intervals without changing totals. The project list always shows all projects for the selected period. CSV export uses the same period and project selection as the page. Chat calls are assigned to their start date; CLI tokens and request counts are assigned to their shutdown date, and CLI cost to the usage checkpoint or shutdown that reported it. Chat usage updates after Copilot exports completed spans; CLI cost appears with the CLI's periodic usage checkpoints (including still-running sessions), tokens and request counts after session shutdown. hoosage polls local history every five seconds.
 
 Export becomes available once indexing, including earlier Chat recovery, has
 finished and any source read errors have been resolved. Both the dashboard and
