@@ -25,6 +25,7 @@ import {
   periodEnd,
   shiftLocalDate,
   customDateBounds,
+  calendarMonthBounds,
   filterCallsBetween,
   usageBuckets,
   startOfRange,
@@ -464,6 +465,50 @@ test("custom date ranges use inclusive local days for filtering and chart bucket
   assert.equal(customDateBounds(now, "2025-07-07", "2025-07-06"), undefined);
   assert.equal(customDateBounds(now, "2025-02-29", "2025-03-01"), undefined);
   assert.equal(customDateBounds(now, "2025-07-06", "2027-01-01"), undefined);
+});
+
+test("calendar months start on the first, include the full final day and stop at now", () => {
+  const now = new Date(2026, 9, 19, 14, 25).getTime();
+  const current = calendarMonthBounds(now)!;
+  assert.deepEqual(current, {
+    start: new Date(2026, 9, 1).getTime(),
+    end: now,
+    days: 19,
+  });
+  assert.deepEqual(calendarMonthBounds(now, "2026-10"), current);
+  for (const [month, days] of [
+    ["2024-02", 29],
+    ["2025-02", 28],
+    ["2025-12", 31],
+    ["2026-03", 31],
+    ["2026-09", 30],
+  ] as const) {
+    const bounds = calendarMonthBounds(now, month)!;
+    assert.equal(localDateKey(bounds.start), `${month}-01`);
+    assert.equal(localDateKey(bounds.end), `${month}-${days}`);
+    assert.equal(new Date(bounds.end).getHours(), 23);
+    assert.equal(new Date(bounds.end).getMilliseconds(), 999);
+    assert.equal(bounds.days, days);
+  }
+  for (const invalid of [
+    "2026-11",
+    "2027-01",
+    "2026-00",
+    "2026-13",
+    "2026-1",
+    "0099-01",
+    "2026-10-01",
+    "bad",
+  ]) {
+    assert.equal(calendarMonthBounds(now, invalid), undefined, invalid);
+  }
+  const nextMonth = new Date(2026, 10, 1, 0, 5).getTime();
+  assert.equal(
+    localDateKey(calendarMonthBounds(nextMonth)!.start),
+    "2026-11-01",
+  );
+  assert.equal(calendarMonthBounds(nextMonth)!.end, nextMonth);
+  assert.equal(calendarMonthBounds(nextMonth)!.days, 1);
 });
 
 test("custom range counts calendar days across daylight saving changes", () => {

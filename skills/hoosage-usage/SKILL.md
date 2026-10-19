@@ -24,6 +24,13 @@ editor extension. Hoosage requires no cloud account/backend of its own.
 4. Select the project and period, then **Export Usage** when an export is requested.
    CSV uses the same selection; unknown values remain empty.
 
+For monthly totals in the VS Code dashboard, click **This month** for the first
+of the current local month through today. It keeps following the current month
+as usage updates. Click **Month…** to choose a specific month and year directly;
+past months include every day. The toolbar arrows move by calendar month in
+this mode. **Custom** still selects arbitrary start/end dates, and the 7/14/30-day
+buttons select rolling periods. The displayed exact dates also apply to CSV.
+
 Use **hoosage: Diagnose Tracking** for failures before editing settings/storage.
 The diagnostic intentionally omits raw endpoint/token/history content. Read
 [tracking.md](references/tracking.md) for hosts, local history, and troubleshooting.

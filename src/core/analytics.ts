@@ -105,6 +105,21 @@ export function customDateBounds(
   return { start, end, days };
 }
 
+/** A local calendar month, with the current month ending at the latest update. */
+export function calendarMonthBounds(
+  now: number,
+  month = localDateKey(now).slice(0, 7),
+): DateBounds | undefined {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return undefined;
+  const startDate = `${month}-01`;
+  if (periodEnd(now, startDate) === undefined) return undefined;
+  const [year, index] = month.split("-").map(Number);
+  const lastDay = localDateKey(new Date(year!, index!, 1).getTime() - 1);
+  const endDate =
+    month === localDateKey(now).slice(0, 7) ? localDateKey(now) : lastDay;
+  return customDateBounds(now, startDate, endDate);
+}
+
 export function filterCallsBetween(
   calls: UsageCall[],
   projectId: string,
