@@ -469,10 +469,139 @@ try {
     skippedLines: 0,
     errors: [],
   };
-  const snapshot = async (value) =>
+  const snapshot = async (value, modelColors = {}) =>
     evaluate(
-      `window.dispatchEvent(new MessageEvent("message", { origin: window.origin, source: window.parent, data: { type: "snapshot", snapshot: ${JSON.stringify(value)} } }))`,
+      `window.dispatchEvent(new MessageEvent("message", { origin: window.origin, source: window.parent, data: { type: "snapshot", snapshot: ${JSON.stringify(value)}, modelColors: ${JSON.stringify(modelColors)} } }))`,
     );
+  const modelTestViewport = await evaluate(
+    "({width: innerWidth, height: innerHeight})",
+  );
+  const manyModels = {
+    ...fixture,
+    calls: Array.from({ length: 16 }, (_, i) => ({
+      ...fixture.calls[0],
+      id: `color-${i}`,
+      model: `Model ${String(i).padStart(2, "0")}`,
+      input: (16 - i) * 100,
+      output: 20,
+    })),
+  };
+  const modelTones = () =>
+    evaluate(
+      `Object.fromEntries([...document.querySelectorAll("[data-model]")].map(node => [node.dataset.model, getComputedStyle(node.querySelector("progress")).accentColor]))`,
+    );
+  await snapshot(manyModels);
+  const automaticTones = await modelTones();
+  assert.equal(
+    Object.keys(automaticTones).length,
+    16,
+    "all models are reachable beyond the former four-model limit",
+  );
+  assert.equal(
+    new Set(Object.values(automaticTones)).size,
+    16,
+    "large inventories use distinct model colors",
+  );
+  for (const width of [1408, 768, 390, 320]) {
+    await send("Emulation.setDeviceMetricsOverride", {
+      width,
+      height: 1100,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    assert.equal(
+      await evaluate(
+        "document.documentElement.scrollWidth <= window.innerWidth",
+      ),
+      true,
+      `${width}px: many models fit the dashboard`,
+    );
+  }
+  await send("Emulation.setDeviceMetricsOverride", {
+    width: 1408,
+    height: 1100,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await screenshot("1408-model-colors-dark");
+  await evaluate(
+    'document.querySelector(".model-list").focus(); document.querySelector(".model-list").scrollTop = 150',
+  );
+  const modelScroll = await evaluate(
+    'document.querySelector(".model-list").scrollTop',
+  );
+  assert.ok(modelScroll > 0, "the model list can be scrolled");
+  await snapshot(manyModels);
+  assert.equal(
+    await evaluate("document.activeElement.dataset.focus"),
+    "model-list",
+    "refresh preserves keyboard focus in the model list",
+  );
+  assert.equal(
+    await evaluate('document.querySelector(".model-list").scrollTop'),
+    modelScroll,
+    "refresh preserves the model list scroll position",
+  );
+  await snapshot({
+    ...manyModels,
+    calls: manyModels.calls.map((call, i) => ({ ...call, input: i * 100 })),
+  });
+  assert.deepEqual(
+    await modelTones(),
+    automaticTones,
+    "token ranking changes do not recolor models",
+  );
+  await snapshot({ ...manyModels, calls: [manyModels.calls[7]] });
+  assert.equal(
+    (await modelTones())[manyModels.calls[7].model],
+    automaticTones[manyModels.calls[7].model],
+    "filtering to one model retains its color",
+  );
+  await snapshot(manyModels, {
+    "Model 00": "#123456",
+    "Model 01": "red; background: url(/missing)",
+  });
+  assert.equal(
+    (await modelTones())["Model 00"],
+    "rgb(18, 52, 86)",
+    "custom colors apply immediately",
+  );
+  assert.equal(
+    (await modelTones())["Model 01"],
+    automaticTones["Model 01"],
+    "invalid CSS falls back to the automatic color",
+  );
+  await evaluate('document.body.className = "vscode-light"');
+  assert.equal(
+    (await modelTones())["Model 00"],
+    "rgb(18, 52, 86)",
+    "custom colors apply to the light theme",
+  );
+  await snapshot(manyModels);
+  const lightTones = await modelTones();
+  assert.equal(
+    new Set(Object.values(lightTones)).size,
+    16,
+    "light theme keeps models distinct",
+  );
+  assert.notEqual(
+    lightTones["Model 00"],
+    automaticTones["Model 00"],
+    "automatic colors adapt to the theme",
+  );
+  await screenshot("1408-model-colors-light");
+  await click('[data-action="modelColors"]');
+  assert.equal(
+    await evaluate("window.hostMessages.at(-1).type"),
+    "modelColors",
+    "Colors opens the model color settings through the host",
+  );
+  await evaluate('document.body.className = "vscode-dark"');
+  await send("Emulation.setDeviceMetricsOverride", {
+    ...modelTestViewport,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
   await snapshot(fixture);
   const initialHostMarkup = await evaluate(
     'document.querySelector("#app").innerHTML',

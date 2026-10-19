@@ -29,6 +29,13 @@ The diagnostic intentionally omits raw endpoint/token/history content. Read
 [tracking.md](references/tracking.md) for hosts, local history, and troubleshooting.
 Never paste the collector URL token or raw Chat transcripts into diagnostics.
 
+For model colors, click **Colors** on the dashboard's Models card or open
+**hoosage: Model Colors** in VS Code Settings. `hoosage.modelColors` maps exact
+displayed model names to `#RRGGBB` or `#RGB` colors in user settings. Changes
+apply immediately across projects in that profile; remove an entry to restore
+its automatic color. Automatic colors adapt to light/dark themes, while custom
+colors use the chosen shade in both. This setting is for the VS Code dashboard.
+
 ## JetBrains setup
 
 Install `hoosage-jetbrains-*.zip` using **Settings → Plugins → Install Plugin from
