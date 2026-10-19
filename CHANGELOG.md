@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0 (2026-10-19)
+
+### Features
+
+- distinguish model colors and allow per-model overrides (91b95f6)
+
 ## 0.14.2 (2026-10-13)
 
 ### Bug Fixes
