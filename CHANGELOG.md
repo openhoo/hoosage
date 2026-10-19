@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.0 (2026-10-19)
+
+### Features
+
+- add calendar-month usage selection (#64) (23e6842)
+
 ## 0.15.0 (2026-10-19)
 
 ### Features
