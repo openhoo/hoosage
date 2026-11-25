@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { dirname, join } from "node:path";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import type { Snapshot } from "../src/core/types";
@@ -39,6 +40,17 @@ export async function run() {
   );
   const knownRecord = JSON.parse(
     await readFile(process.env.HOOSAGE_TEST_KNOWN_PROJECT_RECORD!, "utf8"),
+  );
+  assert.equal(
+    await readFile(
+      join(
+        dirname(process.env.HOOSAGE_TEST_KNOWN_PROJECT_RECORD!),
+        "copilot.jsonl",
+      ),
+      "utf8",
+    ),
+    "",
+    "Opening a newly discovered folder must not look like its Chat history was lost",
   );
   assert.ok(
     knownRecord.createdAt > Date.now() - 60_000,

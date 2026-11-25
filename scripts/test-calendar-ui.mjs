@@ -228,6 +228,24 @@ try {
         }[page],
         `${width}px: icon navigation has a clear name`,
       );
+      if (page === "overview") {
+        assert.equal(
+          await evaluate(`(() => {
+          const range = document.querySelector(".date-trigger strong");
+          const labels = [...document.querySelectorAll(".chart-tick > span")]
+            .map(el => el.getBoundingClientRect()).filter(rect => rect.width > 0);
+          return range.scrollWidth <= range.clientWidth && labels.length >= 3
+            && labels.every((rect, i) => rect.height >= 12 && (!i || rect.left >= labels[i - 1].right + 2));
+        })()`),
+          true,
+          `${width}px: exact date range and readable, nonoverlapping chart labels`,
+        );
+        if (width === 320) {
+          await evaluate('document.querySelector(".charts").scrollIntoView()');
+          await screenshot("320-chart");
+          await evaluate("window.scrollTo({top: 0})");
+        }
+      }
       await screenshot(`${width}-${page}`);
     }
     await click('[data-page="overview"]');
@@ -359,6 +377,14 @@ try {
     );
     await click('[data-focus="this-month"]');
     await click('[data-days="14"]');
+    await click('[data-focus="calendar-trigger"]');
+    await click('[data-focus="calendar-prev-month"]');
+    await click('[data-focus="calendar-next-month"]');
+    assert.ok(
+      await evaluate("document.activeElement.dataset.calendarDay"),
+      `${width}px: reaching the latest month preserves keyboard focus inside the calendar`,
+    );
+    await key("Escape");
     await click('[data-focus="calendar-trigger"]');
     const focusedDay = await evaluate(
       "document.activeElement.dataset.calendarDay",
@@ -554,6 +580,39 @@ try {
       `${width}px: outside click closes calendar`,
     );
   }
+  if (process.env.HOOSAGE_UI_SCREENSHOT_DIR) {
+    // README images use only the labelled sample. Give narrow cards enough
+    // height to show their metrics, and demonstrate an expanded session.
+    const viewport = await evaluate(
+      "({width: innerWidth, height: innerHeight})",
+    );
+    const size = (width, height) =>
+      send("Emulation.setDeviceMetricsOverride", {
+        width,
+        height,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+    await size(320, 1220);
+    await send("Page.navigate", { url });
+    await click('[data-page="projects"]');
+    await screenshot("sample-projects-mobile");
+    await size(1408, 1100);
+    await click('[data-page="overview"]');
+    await screenshot("sample-overview");
+    await evaluate('document.body.className = "vscode-light"');
+    await screenshot("sample-overview-light");
+    await evaluate('document.body.className = "vscode-dark"');
+    await click('[data-page="activity"]');
+    await evaluate(
+      'document.querySelector("#project").value = "demo-3"; document.querySelector("#project").dispatchEvent(new Event("change", { bubbles: true }))',
+    );
+    await click(".session-toggle");
+    await evaluate("window.scrollTo({top: 0})");
+    await screenshot("sample-activity");
+    await size(viewport.width, viewport.height);
+    await click('[data-page="overview"]');
+  }
   // A browser preview has no VS Code host. Even a same-origin snapshot must
   // not become active after the user exits sample-data mode.
   await evaluate(`window.dispatchEvent(new MessageEvent("message", {
@@ -662,6 +721,14 @@ try {
     deviceScaleFactor: 1,
     mobile: false,
   });
+  assert.equal(
+    await evaluate(`(() => {
+    const midpoint = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return r.top + r.height / 2; };
+    return Math.abs(midpoint(".project-picker") - midpoint(".export")) < 2 && Math.abs(midpoint(".date-nav") - midpoint(".export")) < 2;
+  })()`),
+    true,
+    "a long project name does not push Export onto a separate row on desktop",
+  );
   await screenshot("1408-model-colors-dark");
   await evaluate(
     'document.querySelector(".model-list").focus(); document.querySelector(".model-list").scrollTop = 150',
@@ -852,7 +919,62 @@ try {
     "2 entries with unknown call count",
     "unknown aggregate count has a clear plural label",
   );
+  assert.match(
+    await evaluate(
+      'document.querySelector(".bar-incomplete").closest(".chart-bar").getAttribute("aria-label")',
+    ),
+    /unknown input, unknown output tokens/,
+    "unreported buckets do not announce measured zero",
+  );
+  assert.ok(
+    await evaluate(
+      'document.querySelector(".chart-note").textContent.includes("incomplete token data")',
+    ),
+  );
   await screenshot("320-unknown");
+  await snapshot({
+    ...fixture,
+    projects: ["unknown", "zero", "measured"].map((id) => ({
+      ...fixture.projects[0],
+      id,
+      name: id,
+    })),
+    calls: [
+      { ...fixture.calls[0], projectId: "unknown", model: "unknown" },
+      {
+        ...fixture.calls[0],
+        id: "zero",
+        projectId: "zero",
+        model: "zero",
+        input: 0,
+        output: 0,
+      },
+      {
+        ...fixture.calls[0],
+        id: "measured",
+        projectId: "measured",
+        model: "measured",
+        input: 100,
+        output: 10,
+      },
+    ],
+  });
+  for (const [id, label] of [
+    ["unknown", "—"],
+    ["zero", "0%"],
+    ["measured", "100%"],
+  ]) {
+    assert.deepEqual(
+      await evaluate(`(() => {
+      const model = document.querySelector('[data-model="${id}"]');
+      const card = document.querySelector('.project-card [data-project="${id}"]').closest(".project-card");
+      return [model.querySelector(".model-top > span:last-child").textContent, card.querySelector(".project-card-share strong").textContent,
+        !!model.querySelector("progress"), !!card.querySelector("progress")];
+    })()`),
+      [label, label, id !== "unknown", id !== "unknown"],
+      `${id} token share agrees between accessible bars and visible labels`,
+    );
+  }
   await snapshot({
     ...fixture,
     projects: [
@@ -1055,6 +1177,36 @@ try {
     "active empty state offers Stop tracking",
   );
 
+  // A late project discovery and a trip through sample data must leave the
+  // real project and period intact, including the state saved to the host.
+  await evaluate(
+    'document.querySelector("#project").value = "synthetic"; document.querySelector("#project").dispatchEvent(new Event("change", { bubbles: true }))',
+  );
+  await click('[data-days="7"]');
+  await snapshot({ ...fixture, projects: [], calls: [], indexing: true });
+  await snapshot({ ...fixture, calls: [] });
+  assert.equal(
+    await evaluate('document.querySelector("#project").value'),
+    "synthetic",
+    "an interim indexing snapshot cannot discard the selected project",
+  );
+  const realSelection = await evaluate("window.savedState");
+  await click('[data-action="demo"]');
+  await click('[data-focus="this-month"]');
+  await click('[data-page="activity"]');
+  assert.deepEqual(
+    await evaluate("window.savedState"),
+    realSelection,
+    "sample filters never replace the host's real selection",
+  );
+  await click('[data-action="exitDemo"]');
+  assert.deepEqual(
+    await evaluate(
+      '[document.querySelector("h1").textContent, document.querySelector("#project").value, document.querySelector("[data-focus=days-7]").getAttribute("aria-pressed")]',
+    ),
+    ["Copilot usage", "synthetic", "true"],
+    "exit preview restores the original page, project and range",
+  );
   const manySessions = {
     ...fixture,
     calls: Array.from({ length: 205 }, (_, i) => ({

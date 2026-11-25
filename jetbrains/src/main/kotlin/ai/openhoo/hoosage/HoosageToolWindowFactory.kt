@@ -23,6 +23,7 @@ import java.awt.Color
 import java.awt.Dimension
 import java.awt.Font
 import java.awt.GridLayout
+import java.awt.Rectangle
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -44,6 +45,7 @@ import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import javax.swing.Scrollable
 import javax.swing.JTable
 import javax.swing.JTextArea
 import javax.swing.SwingConstants
@@ -93,15 +95,15 @@ internal class UsageView(private val project: Project, private val scanner: Usag
                 add(days); add(refresh); add(export); add(preview)
             }, BorderLayout.SOUTH)
         }
-        val body = JPanel().apply {
+        val body = UsageBody().apply {
             layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.Y_AXIS)
             border = JBUI.Borders.empty(4, 16, 16, 16)
             cards.alignmentX = 0f
             cards.maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(230))
             add(cards)
             add(section("Models", models))
-            add(section("Completed sessions", sessions))
-            add(note("Reported USD is a usage value, not a bill. Unknown costs stay unknown.").apply {
+            add(section("Recent usage records (up to 100)", sessions))
+            add(note("A + marks a partial total; — means no measurement. Reported USD is a usage value, not a bill.").apply {
                 border = JBUI.Borders.emptyTop(12)
             })
             add(note("Local only · no prompts, responses, code or tool arguments are stored.").apply {
@@ -180,18 +182,18 @@ internal class UsageView(private val project: Project, private val scanner: Usag
         val entries = selected()
         cards.removeAll()
         cards.add(card("Model requests", countLabel(entries.map { it.requests })))
-        cards.add(card("Observed tokens", countLabel(entries.map { tokens(it) })))
+        cards.add(card("Observed tokens", tokenLabel(entries)))
         cards.add(card("Reported USD", costLabel(entries)))
         val byModel = entries.groupBy { it.model }.toList().sortedByDescending { (_, calls) ->
-            calls.fold(BigInteger.ZERO) { sum, call -> sum + BigInteger.valueOf(tokens(call) ?: 0) }
+            calls.fold(BigInteger.ZERO) { sum, call -> sum + BigInteger.valueOf(call.input ?: 0) + BigInteger.valueOf(call.output ?: 0) }
         }
         update(models, byModel.map { (model, calls) ->
-            arrayOf(model, countLabel(calls.map { it.requests }), countLabel(calls.map { tokens(it) }), costLabel(calls))
+            arrayOf(model, countLabel(calls.map { it.requests }), tokenLabel(calls), costLabel(calls))
         })
         val date = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.getDefault()).withZone(ZoneId.systemDefault())
         update(sessions, entries.take(100).map {
             arrayOf(date.format(it.timestamp), it.model, it.requests?.toString() ?: "—",
-                tokens(it)?.toString() ?: "—", it.nanoAiu?.let { value -> usd(BigInteger.valueOf(value)) } ?: "—")
+                tokenLabel(listOf(it)), it.nanoAiu?.let { value -> usd(BigInteger.valueOf(value)) } ?: "—")
         })
         status.text = when {
             demo -> "Preview · sample data. Nothing in this view is exported."
@@ -313,11 +315,22 @@ private fun update(table: JTable, rows: List<Array<String>>) {
     rows.forEach { model.addRow(it) }
 }
 
+/** The outer dashboard scrolls vertically. Each table owns its wider columns. */
+private class UsageBody : JPanel(), Scrollable {
+    override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+    override fun getScrollableTracksViewportWidth() = true
+    override fun getScrollableTracksViewportHeight() = false
+    override fun getScrollableUnitIncrement(rect: Rectangle, orientation: Int, direction: Int) = JBUI.scale(16)
+    override fun getScrollableBlockIncrement(rect: Rectangle, orientation: Int, direction: Int) =
+        maxOf(1, (if (orientation == SwingConstants.VERTICAL) rect.height else rect.width) - JBUI.scale(16))
+}
+
 private fun section(title: String, table: JTable): JPanel = JPanel(BorderLayout(0, 8)).apply {
     alignmentX = 0f
     border = JBUI.Borders.emptyTop(18)
     maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(if (title == "Models") 208 else 288))
-    add(JLabel(title).apply { font = font.deriveFont(Font.BOLD, 14f) }, BorderLayout.NORTH)
+    table.accessibleContext.accessibleName = title
+    add(JLabel(title).apply { labelFor = table; font = font.deriveFont(Font.BOLD, 14f) }, BorderLayout.NORTH)
     add(JScrollPane(table).apply { preferredSize = Dimension(320, if (title == "Models") 160 else 240) }, BorderLayout.CENTER)
 }
 
@@ -339,11 +352,8 @@ private fun card(title: String, value: String): JPanel = JPanel(BorderLayout(0, 
     add(JLabel(value, SwingConstants.LEFT).apply { font = font.deriveFont(Font.BOLD, 18f) }, BorderLayout.CENTER)
 }
 
-private fun tokens(entry: UsageEntry): Long? {
-    val input = entry.input ?: return null
-    val output = entry.output ?: return null
-    return try { Math.addExact(input, output) } catch (_: ArithmeticException) { null }
-}
+private fun tokenLabel(entries: List<UsageEntry>): String =
+    countLabel(entries.flatMap { listOf(it.input, it.output) })
 
 private fun countLabel(values: List<Long?>): String {
     if (values.isEmpty() || values.all { it == null }) return "—"

@@ -2,7 +2,6 @@
     <id>ai.openhoo.hoosage.jetbrains</id>
     <name>hoosage</name>
     <vendor url="https://github.com/openhoo/hoosage">OpenHoo</vendor>
-    <version>0.1.0</version>
     <description><![CDATA[
         <h3>Copilot usage for the project in your IDE</h3>
         <p>hoosage reads completed GitHub Copilot session records stored locally on this computer. It shows model requests, observed token counts, reported usage value in USD, model breakdowns, and recent sessions for the current project.</p>
@@ -10,7 +9,7 @@
         <p>Missing values stay unknown. Usage value is not a GitHub invoice or premium-request count. hoosage does not store or export prompts, responses, code, tool arguments, or repository URLs, and it has no account or cloud backend.</p>
     ]]></description>
     <change-notes><![CDATA[
-        First JetBrains release: project-scoped Copilot usage, model and session summaries, date filters, CSV export, and sample preview.
+        Usage stays scoped to each project when a session changes directory. Token totals show the observed portion when only input or output was reported.
     ]]></change-notes>
     <idea-version since-build="252"/>
     <depends>com.intellij.modules.platform</depends>

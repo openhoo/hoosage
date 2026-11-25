@@ -312,6 +312,147 @@ test("missing CLI counters stay unknown across cumulative snapshots and CSV expo
   }
 });
 
+test("isolated counter drops and late cumulative fields cannot inflate a CLI interval", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-counter-drop-"));
+  try {
+    const file = await sessionDir(dir, "drop");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    const event = (
+      id: string,
+      input: number,
+      output: number,
+      read: number,
+      requests: number,
+      write?: number,
+    ) =>
+      shutdown(id, "2026-09-22T10:05:00Z", {
+        "gpt-5.4": {
+          usage: {
+            inputTokens: input,
+            outputTokens: output,
+            cacheReadTokens: read,
+            cacheWriteTokens: write,
+          },
+          requests: { count: requests },
+        },
+      }) + "\n";
+    await writeFile(
+      file,
+      event("start", 100, 10, 30, 1) + event("drop", 80, 20, 10, 2, 15),
+    );
+    const scanner = new CliUsageScanner(dir, cache);
+    await scanner.poll(() => "project");
+    const drop = scanner.calls.get("cli:drop:drop:gpt-5.4")!;
+    assert.equal(drop.input, undefined);
+    assert.equal(drop.cacheRead, undefined);
+    // There was no earlier measurement to subtract from the new cumulative field.
+    assert.equal(drop.cacheWrite, undefined);
+    assert.equal(drop.output, 10);
+    assert.equal(drop.requests, 1);
+    assert.equal(callCost(drop).source, "unavailable");
+
+    await appendFile(file, event("recovered", 120, 30, 36, 3, 17));
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(() => "project");
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(() => "project");
+    assert.deepEqual([...restarted.calls.values()], [...fresh.calls.values()]);
+    const recovered = restarted.calls.get("cli:drop:recovered:gpt-5.4")!;
+    assert.deepEqual(
+      [recovered.input, recovered.cacheRead, recovered.cacheWrite],
+      [20, 6, 2],
+    );
+    assert.equal(totals([...restarted.calls.values()]).input, 120);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resumed projects cannot inherit cumulative usage omitted at an earlier shutdown", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-omitted-boundary-"));
+  try {
+    const file = await sessionDir(dir, "moved");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    const sh = (id: string, modelMetrics: Record<string, unknown>) =>
+      shutdown(id, "2026-09-22T10:06:00Z", modelMetrics);
+    const m = (n: number) => metrics(n, n, 0, 0, n);
+    await writeFile(
+      file,
+      [
+        start("/a"),
+        checkpoint("initial-total", "2026-09-22T10:04:00Z", 100, "measured"),
+        sh("first", { omitted: m(10), incomplete: m(10), measured: m(10) }),
+        sh("boundary", {
+          incomplete: { usage: { outputTokens: 20 } },
+          measured: m(20),
+        }),
+        JSON.stringify({
+          type: "session.resume",
+          data: { context: { cwd: "/b" } },
+        }),
+      ].join("\n") + "\n",
+    );
+    const resolve = (cwd: string) => cwd.slice(1);
+    const first = new CliUsageScanner(dir, cache);
+    await first.poll(resolve);
+    await appendFile(
+      file,
+      [
+        sh("resumed", { omitted: m(30), incomplete: m(30), measured: m(30) }),
+        sh("next", { omitted: m(40), incomplete: m(40), measured: m(40) }),
+        checkpoint("mixed-total", "2026-09-22T10:07:00Z", 300, "measured"),
+        checkpoint("next-total", "2026-09-22T10:08:00Z", 310, "measured"),
+      ].join("\n") + "\n",
+    );
+    const scanner = new CliUsageScanner(dir, cache);
+    await scanner.poll(resolve);
+    const row = (event: string, model: string) =>
+      scanner.calls.get(`cli:moved:${event}:${model}`)!;
+    assert.deepEqual(
+      [row("resumed", "omitted").projectId, row("resumed", "omitted").input],
+      [CLI_PROJECT_ID, 20],
+    );
+    assert.deepEqual(
+      [
+        row("resumed", "incomplete").projectId,
+        row("resumed", "incomplete").input,
+      ],
+      [CLI_PROJECT_ID, 20],
+    );
+    assert.deepEqual(
+      [row("resumed", "measured").projectId, row("resumed", "measured").input],
+      ["b", 10],
+    );
+    for (const model of ["omitted", "incomplete", "measured"]) {
+      assert.equal(row("next", model).projectId, "b");
+      assert.equal(row("next", model).input, 10);
+    }
+    assert.deepEqual(
+      [
+        row("mixed-total", "measured").projectId,
+        row("mixed-total", "measured").nanoAiu,
+      ],
+      [CLI_PROJECT_ID, 200],
+    );
+    assert.deepEqual(
+      [
+        row("next-total", "measured").projectId,
+        row("next-total", "measured").nanoAiu,
+      ],
+      ["b", 10],
+    );
+    assert.equal(totals([...scanner.calls.values()]).input, 120);
+    const fresh = new CliUsageScanner(dir);
+    await fresh.poll(resolve);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify([...scanner.calls.values()])),
+      JSON.parse(JSON.stringify([...fresh.calls.values()])),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("cwd attribution falls back to CLI_PROJECT_ID for unknown or absent cwd", async () => {
   const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-"));
   try {
@@ -1392,6 +1533,55 @@ test("a model reset before the session-total reset is not counted twice across r
     const fresh = new CliUsageScanner(dir);
     await fresh.poll(() => "project");
     assert.deepEqual([...restarted.calls.values()], [...fresh.calls.values()]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("replayed project and model metadata cannot redirect new checkpoint usage after restart", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hoosage-cli-context-replay-"));
+  try {
+    const file = await sessionDir(dir, "session");
+    const cache = { directory: join(dir, "cache"), key: "test" };
+    const model = (id: string, name: string) =>
+      JSON.stringify({
+        type: "session.model_change",
+        id,
+        data: { newModel: name },
+      });
+    const original = [start("/first"), model("m1", "first-model")];
+    await writeFile(
+      file,
+      [
+        ...original,
+        JSON.stringify({
+          type: "session.resume",
+          id: 2,
+          data: { context: { cwd: "/second" } },
+        }),
+        model("m2", "second-model"),
+        checkpoint("c1", "2026-08-20T09:10:00Z", 100),
+      ].join("\n") + "\n",
+    );
+    const resolver = (cwd: string) => cwd.slice(1);
+    const scanner = new CliUsageScanner(dir, cache);
+    await scanner.poll(resolver);
+    await appendFile(
+      file,
+      [...original, checkpoint("c2", "2026-08-20T09:11:00Z", 300)].join("\n") +
+        "\n",
+    );
+    const restarted = new CliUsageScanner(dir, cache);
+    await restarted.poll(resolver);
+    const calls = [...restarted.calls.values()].map((c) => [
+      c.projectId,
+      c.model,
+      c.nanoAiu,
+    ]);
+    assert.deepEqual(calls, [
+      ["second", "second-model", 100],
+      ["second", "second-model", 200],
+    ]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -182,5 +182,10 @@
   },
   "dependencies": {
     "protobufjs": "^8.8.0"
+  },
+  "overrides": {
+    "@vscode/vsce": {
+      "minimatch": "^11.0.1"
+    }
   }
 }
