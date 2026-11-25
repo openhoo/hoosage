@@ -37,6 +37,7 @@ async function harness({
   withWorkspace = false,
   seedTailerCall = false,
   failTailer = false,
+  seedCliCall = false,
 } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "hoosage-lifecycle-"));
   const scanEntered = deferred();
@@ -81,6 +82,7 @@ async function harness({
   const uiUpdate = () => {
     if (disposed) counters.uiAfterDispose++;
   };
+  const statusBar = { show: uiUpdate, hide: uiUpdate, dispose: noop };
   const vscode = {
     workspace: {
       isTrusted: true,
@@ -94,11 +96,7 @@ async function harness({
     env: { sessionId: "synthetic-lifecycle-window" },
     window: {
       createOutputChannel: () => ({ dispose: noop }),
-      createStatusBarItem: () => ({
-        show: uiUpdate,
-        hide: uiUpdate,
-        dispose: noop,
-      }),
+      createStatusBarItem: () => statusBar,
       registerWebviewViewProvider: disposable,
       showSaveDialog: async () => {
         counters.saveDialogs++;
@@ -145,6 +143,21 @@ async function harness({
         calls = new Map();
         skippedLines = 0;
         async poll() {
+          if (seedCliCall) {
+            const projectId = require("node:crypto")
+              .createHash("sha256")
+              .update(folder.uri.toString())
+              .digest("hex")
+              .slice(0, 24);
+            this.calls.set("cli", {
+              id: "cli",
+              projectId,
+              source: "cli",
+              model: "local",
+              timestamp: Date.now(),
+              failed: false,
+            });
+          }
           counters.scans++;
           scanEntered.resolve();
           if (blockScan) await scanRelease.promise;
@@ -210,8 +223,13 @@ async function harness({
     "./core/routing": { registerWindow: async () => {} },
     "./core/environment": { hasTelemetryEnvironmentConflict: () => false },
     "./core/analytics": {
-      filterCalls: () => [],
-      totals: () => ({ tokens: 0, calls: 0, missingUsage: 0 }),
+      filterCalls: (calls, id) => calls.filter((call) => call.projectId === id),
+      totals: (calls) => ({
+        tokens: 0,
+        calls: 0,
+        missingUsage: calls.length,
+        missingRequests: calls.length,
+      }),
       periodEnd: (now) => now,
       startOfRange: () => 0,
       filterCallsBetween: () => [],
@@ -255,6 +273,8 @@ async function harness({
   return {
     api,
     counters,
+    statusBar,
+    settings,
     scanEntered,
     scanRelease,
     collectorEntered,
@@ -265,6 +285,10 @@ async function harness({
     discoveryRelease,
     async storedProjects() {
       return readdir(join(directory, "projects"));
+    },
+    async removeCurrentCapture() {
+      const [id] = await readdir(join(directory, "projects"));
+      await rm(join(directory, "projects", id, "copilot.jsonl"));
     },
     async removeStoredProjects() {
       for (const id of await readdir(join(directory, "projects")))
@@ -296,6 +320,36 @@ async function harness({
   };
 }
 
+const owner = await harness({ blockCollector: true, seedCliCall: true });
+try {
+  await owner.collectorEntered.promise;
+  owner.collectorRelease.resolve();
+  const state = await owner.api.getSnapshot();
+  assert.equal(state.calls.length, 1);
+  assert.equal(
+    state.status,
+    "waiting",
+    "Local CLI history does not prove local Chat delivery",
+  );
+  assert.match(owner.statusBar.text, /— tokens/);
+  assert.match(owner.statusBar.tooltip, /unknown model calls today/);
+  owner.settings.enabled = false; // Stop Tracking from another profile window.
+  assert.equal((await owner.api.getSnapshot()).status, "off");
+  assert.equal(
+    owner.counters.collectorCloses,
+    1,
+    "The owning window releases its collector",
+  );
+  await owner.api.getSnapshot();
+  assert.equal(
+    owner.counters.collectorStarts,
+    1,
+    "The owner must not restart a stopped collector",
+  );
+} finally {
+  await owner.cleanup();
+}
+
 const deletedProject = await harness({
   withWorkspace: true,
   seedTailerCall: true,
@@ -310,6 +364,20 @@ try {
   );
 } finally {
   await deletedProject.cleanup();
+}
+
+const lostCapture = await harness({ withWorkspace: true });
+try {
+  assert.equal((await lostCapture.api.getSnapshot()).errors.length, 0);
+  await lostCapture.removeCurrentCapture();
+  assert.match(
+    (await lostCapture.api.getSnapshot()).errors.join(" "),
+    /Saved Chat history is missing/,
+  );
+  await lostCapture.exportUsage();
+  assert.equal(lostCapture.counters.saveDialogs, 0);
+} finally {
+  await lostCapture.cleanup();
 }
 
 const deletedRoot = await harness({

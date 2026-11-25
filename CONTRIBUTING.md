@@ -20,6 +20,8 @@ To test a packaged candidate, extract `hoosage.vsix` and set
 `npm run test:extension`. `VSCODE_EXECUTABLE` selects an existing VS Code binary.
 The harness keeps its own user profile and extension directory.
 
+CI reads the version from each finished archive and checks it against the root package version. Run `python3 scripts/verify-package.py hoosage.vsix jetbrains/build/distributions/hoosage-jetbrains-<version>.zip` to check both locally.
+
 Use Conventional Commits. Hooversion maps `feat` to minor releases, `fix` and `perf` to patch releases, and `!` or a `BREAKING CHANGE:` footer to major releases. Other valid commit types do not publish a version. Keep pull requests small enough to review. Explain user-visible behavior, threat-model changes, and compatibility impact.
 
 By contributing, you agree that your contribution is licensed under MIT.

@@ -94,6 +94,12 @@ export async function run() {
   assert.equal(response.status, 200);
   const updated = await api.getSnapshot();
   assert.equal(updated.status, "active");
+  assert.ok(
+    !updated.errors.some((error) =>
+      error.includes("Saved Chat history is missing"),
+    ),
+    "The missing-file warning clears once a capture is present again",
+  );
   assert.equal(
     updated.calls.find((call) => call.model === "Recovery model")?.input,
     42,

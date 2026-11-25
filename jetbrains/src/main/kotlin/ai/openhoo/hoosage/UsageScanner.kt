@@ -29,7 +29,7 @@ private data class Counters(
     val cacheRead: Long?, val cacheWrite: Long?, val nanoAiu: Long?,
 )
 
-class UsageScanner(private val root: Path = defaultRoot()) {
+class UsageScanner(private val root: Path = defaultRoot(), private val maxEntries: Int = 100_000) {
     private data class Cached(
         val bytes: Long, val modified: FileTime, val cwd: String?, val projectKey: String,
         val entries: List<UsageEntry>, val skipped: Int,
@@ -41,7 +41,6 @@ class UsageScanner(private val root: Path = defaultRoot()) {
         private const val MAX_TOTAL_BYTES = 128L * 1024 * 1024
         private const val MAX_LINE_CHARS = 2 * 1024 * 1024
         private const val MAX_SESSIONS = 10_000L
-        private const val MAX_ENTRIES = 100_000
 
         fun defaultRoot(): Path {
             val home = System.getenv("COPILOT_HOME")?.takeIf { it.isNotBlank() }
@@ -69,7 +68,7 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                 if (sessions.size > MAX_SESSIONS) skipped++
                 cache.keys.retainAll(sessions)
                 sessions.take(MAX_SESSIONS.toInt()).forEach sessionLoop@{ session ->
-                    if (entries.size >= MAX_ENTRIES) { skipped++; return@sessionLoop }
+                    if (entries.size >= maxEntries) { skipped++; return@sessionLoop }
                     val workspace = session.resolve("workspace.yaml")
                     val metadata = try {
                         if (!Files.isRegularFile(workspace, NOFOLLOW_LINKS) || Files.size(workspace) > 64 * 1024) null
@@ -92,7 +91,7 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                         val prior = cache[session]
                         if (prior != null && prior.bytes == bytes && prior.modified == modified &&
                             prior.cwd == metadata.second && prior.projectKey == projectKey) {
-                            val room = MAX_ENTRIES - entries.size
+                            val room = maxEntries - entries.size
                             entries.addAll(prior.entries.take(room))
                             if (prior.entries.size > room) skipped++
                             skipped += prior.skipped
@@ -100,10 +99,14 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                         }
                         val sessionEntries = ArrayList<UsageEntry>()
                         var sessionSkipped = 0
+                        var clipped = false
                         var cwd = metadata.second
                         var sawContext = false
                         var sawShutdown = false
-                        var mixedCwd = false
+                        // A model may disappear for several shutdowns. Track project changes per model
+                        // so reappearing cumulative metrics cannot bridge a different workspace.
+                        var workspaceEpoch = 0L
+                        val modelEpochs = HashMap<String, Long>()
                         val baselines = HashMap<String, Counters>()
                         val seen = HashSet<String>()
                         var ordinal = 0
@@ -121,7 +124,7 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                                             val next = context.string("cwd")
                                             val nextKey = next?.let(::pathKeyOrNull)
                                             if (nextKey == null || (nextKey != cwd?.let(::pathKeyOrNull) &&
-                                                (sawContext || sawShutdown))) mixedCwd = true
+                                                (sawContext || sawShutdown))) workspaceEpoch++
                                             cwd = next
                                             sawContext = true
                                         }
@@ -135,14 +138,16 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                                             return@lineLoop
                                         }
                                         val metrics = data?.obj("modelMetrics") ?: return@lineLoop
-                                        val ambiguous = mixedCwd
+                                        var ambiguous = false
                                         for ((model, raw) in metrics.entrySet()) {
                                             if (model.isBlank() || !raw.isJsonObject) continue
                                             val current = counters(raw.asJsonObject).validCacheSubsets()
                                             if (current == Counters(null, null, null, null, null, null)) continue
                                             val key = "${event.eventId() ?: ordinal}:$model"
                                             if (!seen.add(key)) continue
-                                            var previous = baselines[model]
+                                            val crossedWorkspace = (modelEpochs.put(model, workspaceEpoch) ?: 0L) != workspaceEpoch
+                                            // Do not carry missing fields forward across a workspace change.
+                                            var previous = baselines[model].takeUnless { crossedWorkspace }
                                             // Copilot can restart model counters on compaction/resume.
                                             // A cost decrease alone does not establish a new run.
                                             if (decreased(current.requests, previous?.requests) ||
@@ -166,9 +171,11 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                                                 // cumulative value into a measured interval cost.
                                                 current.nanoAiu?.let { retainCount(it, previous?.nanoAiu) },
                                             )
-                                            if (ambiguous || cwd?.let { pathKeyOrNull(it) } != projectKey) continue
+                                            if (crossedWorkspace) { ambiguous = true; continue }
+                                            if (cwd?.let { pathKeyOrNull(it) } != projectKey) continue
                                             if (!hasUsage(delta)) continue
-                                            if (entries.size + sessionEntries.size >= MAX_ENTRIES) {
+                                            if (entries.size + sessionEntries.size >= maxEntries) {
+                                                clipped = true
                                                 sessionSkipped++
                                                 continue
                                             }
@@ -177,7 +184,6 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                                                 delta.cacheRead, delta.cacheWrite, delta.nanoAiu))
                                         }
                                         if (ambiguous) sessionSkipped++
-                                        mixedCwd = false
                                         sawShutdown = true
                                     }
                                 }
@@ -185,7 +191,9 @@ class UsageScanner(private val root: Path = defaultRoot()) {
                         }
                         entries.addAll(sessionEntries)
                         skipped += sessionSkipped
-                        cache[session] = Cached(bytes, modified, metadata.second, projectKey,
+                        // A later scan may have more room if another session is removed.
+                        if (clipped) cache.remove(session)
+                        else cache[session] = Cached(bytes, modified, metadata.second, projectKey,
                             sessionEntries, sessionSkipped)
                     } catch (_: Exception) { skipped++ }
                 }

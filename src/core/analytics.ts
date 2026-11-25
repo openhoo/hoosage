@@ -69,7 +69,10 @@ export function periodEnd(now: number, endDate?: string): number | undefined {
   return Math.min(now, date.getTime() - 1);
 }
 
-export function shiftLocalDate(dateKey: string, days: number): string | undefined {
+export function shiftLocalDate(
+  dateKey: string,
+  days: number,
+): string | undefined {
   if (periodEnd(Date.now(), dateKey) === undefined) return undefined;
   const [year, month, day] = dateKey.split("-").map(Number);
   const date = new Date(year!, month! - 1, day!);
@@ -136,19 +139,35 @@ export function filterCallsBetween(
 /** At most 30 calendar buckets, so multi-year ranges stay legible. */
 export function usageBuckets(calls: UsageCall[], bounds: DateBounds) {
   const interval =
-    [1, 7, 14, 30, 90, 365].find((size) => Math.ceil(bounds.days / size) <= 30) ??
-    Math.ceil(bounds.days / 30 / 365) * 365;
-  const buckets: Array<Totals & { start: number; end: number }> = [];
+    [1, 7, 14, 30, 90, 365].find(
+      (size) => Math.ceil(bounds.days / size) <= 30,
+    ) ?? Math.ceil(bounds.days / 30 / 365) * 365;
+  const buckets: Array<
+    Totals & {
+      start: number;
+      end: number;
+      entries: number;
+      missingInput: number;
+      missingOutput: number;
+    }
+  > = [];
   let cursor = new Date(bounds.start);
   while (cursor.getTime() <= bounds.end) {
     const start = cursor.getTime();
     cursor = new Date(cursor);
     cursor.setDate(cursor.getDate() + interval);
     const end = Math.min(cursor.getTime() - 1, bounds.end);
-    const usage = totals(
-      calls.filter((call) => call.timestamp >= start && call.timestamp <= end),
+    const entries = calls.filter(
+      (call) => call.timestamp >= start && call.timestamp <= end,
     );
-    buckets.push({ start, end, ...usage });
+    buckets.push({
+      start,
+      end,
+      ...totals(entries),
+      entries: entries.length,
+      missingInput: entries.filter((call) => call.input === undefined).length,
+      missingOutput: entries.filter((call) => call.output === undefined).length,
+    });
   }
   return { interval, buckets };
 }

@@ -20,7 +20,7 @@ editor extension. Hoosage requires no cloud account/backend of its own.
    to an authenticated loopback collector. Existing windows need a reload.
 3. Use a normal Copilot Chat request and verify that measured Chat entries increase
    in the intended project after the completed span is exported. A labelled
-   preview or reachable collector does not prove real collection.
+   preview or reachable collector does not prove real collection. Imported history, CLI sessions, and shared entries do not increase the diagnostic count of Chat spans saved on this host.
 4. Select the project and period, then **Export Usage** when an export is requested.
    CSV uses the same selection; unknown values remain empty.
 

@@ -1,7 +1,13 @@
+import groovy.json.JsonSlurper
+
 plugins {
     kotlin("jvm") version "2.1.20"
     id("org.jetbrains.intellij.platform") version "2.19.0"
 }
+
+// A GitHub release ships the VSIX and plugin ZIP together.
+val manifest = providers.fileContents(layout.projectDirectory.file("../package.json")).asText
+version = (JsonSlurper().parseText(manifest.get()) as Map<*, *>)["version"] as String
 
 repositories {
     mavenCentral()

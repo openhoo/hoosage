@@ -10,3 +10,4 @@ jetbrains/.gradle/
 jetbrains/.intellijPlatform/
 jetbrains/build/
 jetbrains/.idea/
+jetbrains/.kotlin/

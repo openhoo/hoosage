@@ -2,7 +2,7 @@
   <img src="media/icon.png" width="88" alt="hoosage owl" />
   <h1>hoosage.</h1>
   <p><strong>Copilot usage by project.</strong></p>
-  <p>A local Copilot usage dashboard for VS Code, built by OpenHoo.</p>
+  <p>Local Copilot usage for VS Code and JetBrains IDEs, built by OpenHoo.</p>
 </div>
 
 ![Dark dashboard with USD costs, token trends, model usage and project comparisons — sample data](media/dashboard.png)
@@ -48,7 +48,7 @@ For unpublished changes, pass the local checkout path instead of
 
 Requires VS Code **1.119 or newer**, with Copilot's OpenTelemetry settings available. Copilot must already be configured for actual AI use. The extension works in trusted folder workspaces on desktop VS Code, with real Copilot Pro sessions verified on macOS. Remote SSH, WSL and container Chat delivery have not been verified. It does not run in browser-only VS Code or virtual workspaces. In a remote window, install hoosage on the remote workspace host as described below.
 
-Want a look first? **Explore a preview** shows clearly labelled sample data. Samples never enter your usage history or exports.
+Want a look first? **Explore a preview** shows clearly labelled sample data. Samples never enter your usage history or exports. Leaving the preview restores the project and period you were viewing.
 
 ## What you get
 
@@ -58,7 +58,7 @@ Want a look first? **Explore a preview** shows clearly labelled sample data. Sam
 - Usage charts with readable intervals for long periods, model shares and a project comparison that keeps every metric visible on narrow screens.
 - One-click month-to-date usage, a month picker with calendar-month navigation, 7-, 14- and 30-day presets, custom dates, project selection and session drilldowns.
 - CSV export of the selected project and period, including cost source and price-table date; unknown values stay empty.
-- A status bar indicator for today's current-project usage.
+- A VS Code status bar indicator for today’s current-project usage. A dash means no token count was reported; a trailing **+** marks a known subtotal.
 - No hoosage account, cloud backend, credentials or outbound analytics.
 - Copilot CLI and JetBrains Copilot usage from local session-state files, grouped by working directory.
 
@@ -78,7 +78,7 @@ Choose exact start and end dates with **Custom**, jump by month or year, or move
 
 ### Project costs
 
-Compare each workspace's model calls, tokens and usage cost in US dollars. The **≈** marker identifies estimated costs. Narrow windows use cards that retain the call count and token share.
+Compare each workspace's model calls, tokens and usage cost in US dollars. The **≈** marker identifies estimated costs. Narrow windows use cards that retain the call count and token share. A dash means there is no measured share; a measured zero is shown as 0% when the total is known. The token chart marks intervals with missing measurements.
 
 ![Projects view comparing all sample projects by model calls, tokens, estimated USD cost and share of usage — sample data](media/screenshots/projects.png)
 
@@ -134,7 +134,7 @@ The dashboard follows your VS Code theme, with a light palette alongside the gra
 
 ## What the numbers mean
 
-**These are observed Copilot Chat model calls and CLI session summaries, not a GitHub invoice.** One user prompt can trigger multiple model calls. Agent orchestration totals, logs and cumulative metrics are deliberately excluded from Chat calls because they can repeat the same consumption. Repeated trace/span IDs count once; CLI cumulative metrics are converted to increments between shutdowns. Replayed CLI usage events are ignored across cached restarts, and counter resets after compaction or resume start a new measured interval. Session counts keep Chat, imported history, CLI and JetBrains identities separate.
+**These are observed Copilot Chat model calls and CLI session summaries, not a GitHub invoice.** One user prompt can trigger multiple model calls. Agent orchestration totals, logs and cumulative metrics are deliberately excluded from Chat calls because they can repeat the same consumption. Repeated trace/span IDs count once; CLI cumulative metrics are converted to increments between shutdowns. Replayed CLI usage events are ignored across cached restarts, and counter resets after compaction or resume start a new measured interval. When only one cumulative counter falls or first appears after an earlier checkpoint, its increment stays unknown for that interval. Replayed session metadata cannot move later usage to an earlier project. If a cumulative interval spans a change of working directory and no measurement separates the projects, its usage stays in the unassigned source bucket. Session counts keep Chat, imported history, CLI and JetBrains identities separate.
 
 Cache reads are displayed separately as reported by Copilot; they are **not added again** to input/output totals. Missing token or CLI request counts remain unknown and produce an incomplete-coverage notice. Sessions count only calls with an explicit conversation identifier; each call without one appears separately as an **Unlinked call**.
 
@@ -197,7 +197,7 @@ On explicit setup, hoosage changes these **user-level** Copilot settings:
 
 The listener binds only to `127.0.0.1`. It accepts OTLP JSON/protobuf and gzip, requires a random collector URL token, rejects browser-origin requests and limits request size. Metrics and logs are acknowledged and discarded. Only completed `chat` spans are retained, after an explicit allowlist removes prompts, responses, code, tool arguments, repository URLs and other attributes.
 
-History lives under `globalStorageUri/projects/<workspace-hash>/`; shared collector configuration and hashed window registrations live alongside `projects/`, outside your repository. Opening the same workspace after an update retains the project record and appends to the existing usage file. Each VS Code profile and extension host has separate storage; opening a remote workspace or a different profile does not migrate local history. Shared Project Sync is separately opt-in and writes its sanitized exchange files only to the folder selected by the user. If a previously registered project has lost its Chat history file on this host, hoosage reports that condition instead of silently creating an empty replacement. **hoosage: Diagnose Tracking** reports the current project's opaque directory ID and workspace-derived name, a fingerprint of this extension storage location, file size and modification time, bytes and lines read, separate Chat and CLI indexing states, endpoint match and collector health. It omits the raw storage path, endpoint, token and usage content. The project name lets you confirm you are diagnosing the intended window when several projects are open across windows.
+History lives under `globalStorageUri/projects/<workspace-hash>/`; shared collector configuration and hashed window registrations live alongside `projects/`, outside your repository. Opening the same workspace after an update retains the project record and appends to the existing usage file. Each VS Code profile and extension host has separate storage; opening a remote workspace or a different profile does not migrate local history. Shared Project Sync is separately opt-in and writes its sanitized exchange files only to the folder selected by the user. If a previously registered project has lost its Chat history file on this host, hoosage reports that condition instead of silently creating an empty replacement. **hoosage: Diagnose Tracking** reports the current project's opaque directory ID and workspace-derived name, a fingerprint of this extension storage location, file size and modification time, bytes and lines read, separate Chat and CLI indexing states, endpoint match and collector health. It omits the raw storage path, endpoint, token and usage content. Only Chat spans saved locally in the current project count as evidence of local Chat delivery. Imported transcripts, CLI sessions and entries from shared sync can still appear in the dashboard while tracking waits for its first local Chat span. The project name lets you confirm you are diagnosing the intended window when several projects are open across windows.
 
 Saved usage is indexed in the background when the extension starts. The dashboard and status bar show an indexing state until totals are complete; large local histories are read in bounded batches without delaying extension activation.
 
@@ -209,7 +209,7 @@ VS Code 1.138 restricts these Copilot settings to application scope. Setup there
 
 VS Code can run extensions on the local UI host or the [remote workspace host](https://code.visualstudio.com/api/advanced-topics/remote-extensions). In a WSL or Dev Container window, install hoosage **in that remote environment** and reload. If only the local copy is present, hoosage displays an actionable blocked state and **Diagnose Tracking** explains which host is running. A reachable collector on a remote host alone does not prove that Copilot Chat sends spans to that host: make one real Chat request and check whether the saved Chat-entry count increases. If it does not, remote Chat delivery is not yet supported for that host arrangement; use a local workspace for verified tracking. Hoosage never copies usage between local, WSL and container storage automatically. (On Windows it only reads Copilot CLI session-state of running WSL distributions; see [Project attribution](#project-attribution).)
 
-**Stop tracking before uninstalling.** Run **hoosage: Stop Tracking** and reload all open windows to restore the previous user values. This stops collection for all projects in this VS Code configuration. Settings changed by you after setup are preserved. Stopping keeps your history. To delete history, stop tracking, reload, and delete the corresponding project directory from hoosage global storage. No automatic retention/rotation is performed in this first release; the sanitized JSONL file grows with usage.
+**Stop tracking before uninstalling.** Run **hoosage: Stop Tracking** and reload all open windows to restore the previous user values. This stops collection for all projects in this VS Code configuration. Settings changed by you after setup are preserved. Stopping keeps your history. To delete history, stop tracking, reload, and delete the corresponding project directory from hoosage global storage. Hoosage does not automatically rotate or delete saved history; the sanitized JSONL file grows with usage.
 
 All registered windows share the collector; a remaining window can take over if its owner closes. Copilot calls made during a handover may be missed. Loopback transport is not protection against other processes already running as your OS user.
 

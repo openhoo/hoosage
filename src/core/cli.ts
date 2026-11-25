@@ -10,8 +10,8 @@ const MAX_LINE = 2 * 1024 * 1024;
 const BATCH = 4 * 1024 * 1024;
 const MAX_SKEW = 24 * 60 * 60 * 1000;
 const EMPTY = Buffer.alloc(0);
-/** Bump when the cached reader state changes shape. */
-const CACHE_FORMAT = 8;
+/** Bump when saved baselines or event identities change meaning. */
+const CACHE_FORMAT = 10;
 const SAVE_INTERVAL_MS = 30_000;
 
 /** Attribution bucket for CLI sessions whose cwd matches no known project. */
@@ -34,7 +34,19 @@ export function folderPathHash(fsPath: string): string {
   return createHash("sha256").update(normalized.toLowerCase()).digest("hex");
 }
 
+const counterFields = [
+  "input",
+  "output",
+  "cacheRead",
+  "cacheWrite",
+  "requests",
+  "nanoAiu",
+] as const;
+type CounterField = (typeof counterFields)[number];
+
 interface ModelSnapshot {
+  /** Last reliable observation of each counter, in file event order. */
+  observedAt?: Partial<Record<CounterField, number>>;
   input?: number;
   output?: number;
   cacheRead?: number;
@@ -56,8 +68,11 @@ interface FileState {
   cwdExplicit: boolean;
   /** Event ordinal within this file; disambiguates events lacking an id. */
   seq: number;
+  lastUsageSeq: number;
+  cwdBoundary: number;
+  totalObservedAt: number;
   emitted: Set<string>;
-  /** Usage event IDs already applied to cumulative counters. */
+  /** Events already applied to attribution or cumulative counters. */
   seenEvents: Set<string>;
   baselines: Map<string, ModelSnapshot>;
   /** Model resets already observed while this session total was unchanged. */
@@ -83,6 +98,9 @@ const freshState = (): FileState => ({
   dropping: false,
   cwdExplicit: false,
   seq: 0,
+  lastUsageSeq: 0,
+  cwdBoundary: 0,
+  totalObservedAt: 0,
   emitted: new Set(),
   seenEvents: new Set(),
   baselines: new Map(),
@@ -148,8 +166,22 @@ const num = (value: unknown): number | undefined =>
     ? value
     : undefined;
 
-const deltaCount = (current?: number, previous?: number) =>
-  current === undefined ? undefined : Math.max(0, current - (previous ?? 0));
+// Except on the first snapshot of a run, a single falling or newly appearing
+// counter cannot measure that interval. A falling value must not lower the
+// baseline, otherwise the next good snapshot repeats already counted usage.
+const deltaCount = (
+  current: number | undefined,
+  previous: number | undefined,
+  first: boolean,
+) =>
+  current === undefined || first
+    ? current
+    : previous === undefined || current < previous
+      ? undefined
+      : current - previous;
+
+const retainCount = (current?: number, previous?: number) =>
+  current === undefined ? previous : Math.max(current, previous ?? 0);
 
 // A newly appearing cumulative cost cannot be assigned to just the latest
 // interval if earlier snapshots for this model had no cost field.
@@ -181,6 +213,13 @@ const text = (value: unknown): string | undefined =>
   !value.includes("\0")
     ? value
     : undefined;
+
+const explicitEventId = (id: unknown): string | undefined =>
+  typeof id === "string" && id
+    ? id
+    : typeof id === "number" && Number.isFinite(id)
+      ? String(id)
+      : undefined;
 
 type CachedCall = Omit<
   UsageCall,
@@ -216,6 +255,9 @@ function restoreFile(
     cwd: text(saved.cwd),
     cwdExplicit: saved.cwdExplicit === true,
     seq,
+    lastUsageSeq: num(saved.lastUsageSeq) ?? 0,
+    cwdBoundary: num(saved.cwdBoundary) ?? 0,
+    totalObservedAt: num(saved.totalObservedAt) ?? 0,
     workspace: workspace
       ? { clientName: text(workspace.clientName), cwd: text(workspace.cwd) }
       : undefined,
@@ -229,7 +271,11 @@ function restoreFile(
   for (const [model, raw] of Object.entries(record(saved.baselines) ?? {})) {
     const baseline = record(raw);
     if (!model || !baseline) return undefined;
+    const observedAt = record(baseline.observedAt);
     st.baselines.set(model, {
+      observedAt: Object.fromEntries(
+        counterFields.map((field) => [field, num(observedAt?.[field])]),
+      ),
       input: num(baseline.input),
       output: num(baseline.output),
       cacheRead: num(baseline.cacheRead),
@@ -476,6 +522,9 @@ export class CliUsageScanner {
         inode: st.inode,
         dropping: st.dropping,
         seq: st.seq,
+        lastUsageSeq: st.lastUsageSeq,
+        cwdBoundary: st.cwdBoundary,
+        totalObservedAt: st.totalObservedAt,
         seenEvents: [...st.seenEvents],
         cwd: st.cwd,
         cwdExplicit: st.cwdExplicit,
@@ -661,11 +710,26 @@ export class CliUsageScanner {
       return;
     }
     st.seq++;
+    if (
+      event.type === "session.start" ||
+      event.type === "session.resume" ||
+      event.type === "session.model_change"
+    ) {
+      // A replayed lifecycle event must not restore an old cwd or model
+      // and silently redirect the next usage increment after a resume.
+      const id = explicitEventId(event.id);
+      if (id !== undefined) {
+        if (st.seenEvents.has(id)) return;
+        st.seenEvents.add(id);
+      }
+    }
     if (event.type === "session.start" || event.type === "session.resume") {
       const context = record(record(event.data)?.context);
       if (context && Object.hasOwn(context, "cwd")) {
+        const next = text(context.cwd);
+        if (next !== st.cwd) st.cwdBoundary = st.lastUsageSeq;
         st.cwdExplicit = true;
-        st.cwd = text(context.cwd);
+        st.cwd = next;
       }
       return;
     }
@@ -685,21 +749,28 @@ export class CliUsageScanner {
         Array.isArray(caches) ? record(caches[0])?.modelId : undefined,
       );
       if (model) st.model = model;
+      const mixed = st.totalObservedAt < st.cwdBoundary;
       const total = this.sessionTotal(st, reported);
       const increment = total - st.accounted;
       if (increment <= 0) return;
       st.accounted = total;
       // Cost only: tokens and requests of this interval arrive with the
       // shutdown's modelMetrics, so zero keeps them from being counted twice.
-      this.emit(sessionId, st, resolve, {
-        id: `cli:${sessionId}:${stamp.eventId}:${st.model ?? "unknown"}`,
-        timestamp: stamp.timestamp,
-        model: st.model ?? "unknown",
-        input: 0,
-        output: 0,
-        requests: 0,
-        nanoAiu: increment,
-      });
+      this.emit(
+        sessionId,
+        st,
+        resolve,
+        {
+          id: `cli:${sessionId}:${stamp.eventId}:${st.model ?? "unknown"}`,
+          timestamp: stamp.timestamp,
+          model: st.model ?? "unknown",
+          input: 0,
+          output: 0,
+          requests: 0,
+          nanoAiu: increment,
+        },
+        mixed,
+      );
       return;
     }
     if (event.type !== "session.shutdown") return;
@@ -713,6 +784,7 @@ export class CliUsageScanner {
     // Undefined keeps the per-model cost behaviour of CLIs without the total.
     let unassigned: number | undefined;
     const reportedTotal = num(data?.totalNanoAiu);
+    const mixedTotal = st.totalObservedAt < st.cwdBoundary;
     if (reportedTotal !== undefined) {
       const total = this.sessionTotal(st, reportedTotal);
       unassigned = Math.max(0, total - st.accounted);
@@ -742,6 +814,7 @@ export class CliUsageScanner {
         continue;
       }
       let baseline = st.baselines.get(model);
+      const previousObservation = baseline?.observedAt;
       // CLI compaction/resume can restart model counters without a session
       // cost counter. A decreasing request counter (or both token counters)
       // identifies a new run; its first snapshot must count in full.
@@ -761,20 +834,43 @@ export class CliUsageScanner {
       if (snapshot.nanoAiu === undefined || costDecreased)
         synchronizedModelCost = false;
       const delta: ModelSnapshot = {
-        input: deltaCount(snapshot.input, baseline?.input),
-        output: deltaCount(snapshot.output, baseline?.output),
-        cacheRead: deltaCount(snapshot.cacheRead, baseline?.cacheRead),
-        cacheWrite: deltaCount(snapshot.cacheWrite, baseline?.cacheWrite),
-        requests: deltaCount(snapshot.requests, baseline?.requests),
+        input: deltaCount(snapshot.input, baseline?.input, !baseline),
+        output: deltaCount(snapshot.output, baseline?.output, !baseline),
+        cacheRead: deltaCount(
+          snapshot.cacheRead,
+          baseline?.cacheRead,
+          !baseline,
+        ),
+        cacheWrite: deltaCount(
+          snapshot.cacheWrite,
+          baseline?.cacheWrite,
+          !baseline,
+        ),
+        requests: deltaCount(snapshot.requests, baseline?.requests, !baseline),
         nanoAiu: deltaReportedCost(snapshot.nanoAiu, baseline),
       };
       validateCacheSubsets(delta);
+      // A delta is attributable only if its preceding measurement reached
+      // the last usage boundary before the cwd changed. Keep an indivisible
+      // mixed record under its source bucket so overall usage remains intact.
+      const mixed = counterFields.some(
+        (field) =>
+          (delta[field] ?? 0) > 0 &&
+          (previousObservation?.[field] ?? 0) < st.cwdBoundary,
+      );
+      const observedAt = { ...baseline?.observedAt };
+      for (const field of counterFields) {
+        const current = snapshot[field];
+        if (current !== undefined && current >= (baseline?.[field] ?? 0))
+          observedAt[field] = st.seq;
+      }
       st.baselines.set(model, {
-        input: snapshot.input ?? baseline?.input,
-        output: snapshot.output ?? baseline?.output,
-        cacheRead: snapshot.cacheRead ?? baseline?.cacheRead,
-        cacheWrite: snapshot.cacheWrite ?? baseline?.cacheWrite,
-        requests: snapshot.requests ?? baseline?.requests,
+        observedAt,
+        input: retainCount(snapshot.input, baseline?.input),
+        output: retainCount(snapshot.output, baseline?.output),
+        cacheRead: retainCount(snapshot.cacheRead, baseline?.cacheRead),
+        cacheWrite: retainCount(snapshot.cacheWrite, baseline?.cacheWrite),
+        requests: retainCount(snapshot.requests, baseline?.requests),
         // A falling cost without a token/request reset is unreliable, not a
         // new baseline. A genuinely missing field still breaks known coverage.
         nanoAiu: costDecreased ? baseline?.nanoAiu : snapshot.nanoAiu,
@@ -814,17 +910,23 @@ export class CliUsageScanner {
       }
       emitted.set(
         model,
-        this.emit(sessionId, st, resolve, {
-          id: `cli:${sessionId}:${eventId}:${model}`,
-          timestamp,
-          model,
-          input: delta.input,
-          output: delta.output,
-          cacheRead: delta.cacheRead,
-          cacheWrite: delta.cacheWrite,
-          requests: delta.requests,
-          nanoAiu,
-        }),
+        this.emit(
+          sessionId,
+          st,
+          resolve,
+          {
+            id: `cli:${sessionId}:${eventId}:${model}`,
+            timestamp,
+            model,
+            input: delta.input,
+            output: delta.output,
+            cacheRead: delta.cacheRead,
+            cacheWrite: delta.cacheWrite,
+            requests: delta.requests,
+            nanoAiu,
+          },
+          mixed,
+        ),
       );
     }
     if (reportedTotal !== undefined && synchronizedModelCost)
@@ -839,17 +941,25 @@ export class CliUsageScanner {
     if (!unassigned) return;
     const model = st.model ?? "unknown";
     const call = emitted.get(model);
-    if (call) call.nanoAiu = (call.nanoAiu ?? 0) + unassigned;
-    else
-      this.emit(sessionId, st, resolve, {
-        id: `cli:${sessionId}:${eventId}:${model}`,
-        timestamp,
-        model,
-        input: 0,
-        output: 0,
-        requests: 0,
-        nanoAiu: unassigned,
-      });
+    if (call) {
+      call.nanoAiu = (call.nanoAiu ?? 0) + unassigned;
+      if (mixedTotal) this.keepUnassigned(call);
+    } else
+      this.emit(
+        sessionId,
+        st,
+        resolve,
+        {
+          id: `cli:${sessionId}:${eventId}:${model}`,
+          timestamp,
+          model,
+          input: 0,
+          output: 0,
+          requests: 0,
+          nanoAiu: unassigned,
+        },
+        mixedTotal,
+      );
   }
 
   /** Validated timestamp and a stable per-file event id. */
@@ -867,18 +977,13 @@ export class CliUsageScanner {
       this.skippedLines++;
       return undefined;
     }
-    const eventId =
-      typeof event.id === "string" && event.id
-        ? event.id
-        : typeof event.id === "number" && Number.isFinite(event.id)
-          ? String(event.id)
-          : // Events without an id fall back to timestamp + file ordinal, so
-            // same-millisecond events cannot overwrite each other.
-            `t${timestamp}-${st.seq}`;
+    // The ordinal distinguishes id-less events in the same millisecond.
+    const eventId = explicitEventId(event.id) ?? `t${timestamp}-${st.seq}`;
     // Replayed events must not roll back baselines, restart session counters,
     // or overwrite an earlier emitted interval. Persist this across windows.
     if (st.seenEvents.has(eventId)) return undefined;
     st.seenEvents.add(eventId);
+    st.lastUsageSeq = st.seq;
     return { timestamp, eventId };
   }
 
@@ -886,6 +991,7 @@ export class CliUsageScanner {
    * total. A drop means the CLI restarted its counters (older versions do on
    * resume): earlier runs stay counted and per-model baselines restart. */
   private sessionTotal(st: FileState, reported: number): number {
+    st.totalObservedAt = st.seq;
     // Newly available authoritative totals cover earlier token-only intervals.
     // Keep their individual costs unknown; suppress only their fallback estimate.
     for (const id of st.emitted) {
@@ -911,6 +1017,7 @@ export class CliUsageScanner {
     st: FileState,
     resolve: Resolve,
     call: Omit<UsageCall, "projectId" | "sessionId" | "source" | "failed">,
+    mixed = false,
   ): UsageCall {
     const full: UsageCall = {
       ...call,
@@ -924,8 +1031,17 @@ export class CliUsageScanner {
     this.calls.set(full.id, full);
     if (st.cwd) this.callCwds.set(full.id, st.cwd);
     if (st.cwdExplicit) this.callCwdExplicit.add(full.id);
+    if (mixed) this.keepUnassigned(full);
     st.emitted.add(full.id);
     return full;
+  }
+
+  private keepUnassigned(call: UsageCall): void {
+    call.projectId =
+      call.source === "jetbrains" ? JETBRAINS_PROJECT_ID : CLI_PROJECT_ID;
+    this.callCwds.delete(call.id);
+    // Prevent later workspace metadata from backfilling a mixed interval.
+    this.callCwdExplicit.add(call.id);
   }
 
   private sessionIdentity(sessionId: string): string {

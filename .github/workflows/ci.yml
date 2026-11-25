@@ -27,6 +27,7 @@ jobs:
       - run: npm ci --no-audit
       - run: npm run check
       - run: npm run package
+      - run: python3 scripts/verify-package.py hoosage.vsix
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hoosage-vsix
@@ -42,6 +43,7 @@ jobs:
           java-version: '21'
       - run: ./gradlew test buildPlugin verifyPluginStructure
         working-directory: jetbrains
+      - run: python3 scripts/verify-package.py jetbrains/build/distributions/*.zip
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hoosage-jetbrains

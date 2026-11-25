@@ -26,7 +26,8 @@ class UsageViewTest : LightPlatformTestCase() {
         fun event(id: String, timestamp: Instant, requests: Int, input: Int): String =
             """{"id":"$id","type":"session.shutdown","timestamp":"$timestamp","data":{"modelMetrics":{"gpt-5":{"requests":{"count":$requests},"usage":{"inputTokens":$input,"outputTokens":20}}}}}"""
         Files.writeString(session.resolve("events.jsonl"),
-            event("old", now.minusSeconds(10 * 86_400), 1, 100) + "\n" + event("recent", now.minusSeconds(60), 2, 150) + "\n")
+            event("old", now.minusSeconds(10 * 86_400), 1, 100) + "\n" +
+                event("recent", now.minusSeconds(60), 2, 150).replace(",\"outputTokens\":20", "") + "\n")
         val view = UsageView(project, UsageScanner(root))
         try {
             val widgets = descendants(view.component)
@@ -43,6 +44,9 @@ class UsageViewTest : LightPlatformTestCase() {
             PlatformTestUtil.waitWithEventsDispatching("Usage scan did not reach the Swing view",
                 { sessions.rowCount == 2 && refresh.isEnabled }, 10)
             assertEquals("2", models.getValueAt(0, 1))
+            assertEquals("170+", models.getValueAt(0, 2))
+            assertEquals("50+", sessions.getValueAt(0, 3))
+            assertEquals("Recent usage records (up to 100)", sessions.accessibleContext.accessibleName)
             assertEquals("—", models.getValueAt(0, 3))
             assertTrue(export.isEnabled)
             days.selectedIndex = 0
@@ -95,6 +99,14 @@ class UsageViewTest : LightPlatformTestCase() {
                 val graphics = image.createGraphics()
                 try { view.component.printAll(graphics) } finally { graphics.dispose() }
                 ImageIO.write(image, "png", file.toFile())
+                view.component.setSize(320, 640)
+                repeat(3) { layout(view.component) }
+                val bodyScroll = view.component.components.filterIsInstance<javax.swing.JScrollPane>().single()
+                assertFalse("A narrow tool window should only need vertical scrolling", bodyScroll.horizontalScrollBar.isVisible)
+                val narrowImage = BufferedImage(320, 640, BufferedImage.TYPE_INT_ARGB)
+                val narrowGraphics = narrowImage.createGraphics()
+                try { view.component.printAll(narrowGraphics) } finally { narrowGraphics.dispose() }
+                ImageIO.write(narrowImage, "png", file.resolveSibling("usage-narrow.png").toFile())
                 view.component.removeNotify()
             }
         } finally {

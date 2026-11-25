@@ -86,6 +86,34 @@ class UsageScannerTest {
         } finally { root.toFile().deleteRecursively() }
     }
 
+    @Test fun `a returning model and missing fields cannot carry usage across projects`() {
+        val root = Files.createTempDirectory("hoosage-jb-transfer-")
+        try {
+            val before = root.resolve("before")
+            val after = root.resolve("after")
+            val state = Files.createDirectory(root.resolve("state"))
+            session(state, "moved", "copilot-intellij", before, listOf(
+                shutdown("a1", 100, 10, 1, 100),
+                shutdown("b1", 200, 20, 2, 200).replace("gpt-5", "other"),
+                """{"type":"session.resume","data":{"context":{"cwd":"$after"}}}""",
+                shutdown("a2", 120, 12, 2, 120).replace("\"inputTokens\":120,", ""),
+                shutdown("b2", 250, 25, 3, 250).replace("gpt-5", "other"),
+                shutdown("a3", 160, 16, 3, 160),
+                shutdown("b3", 270, 29, 4, 270).replace("gpt-5", "other"),
+            ))
+            val scanner = UsageScanner(state)
+            val result = scanner.scan(after)
+            assertEquals(2, result.entries.size)
+            val modelA = result.entries.single { it.model == "gpt-5" }
+            assertEquals(null, modelA.input)
+            assertEquals(4L, modelA.output)
+            assertEquals(20L, result.entries.single { it.model == "other" }.input)
+            assertEquals(2, result.skipped)
+            assertEquals(result, scanner.scan(after))
+            assertEquals(listOf(100L, 200L), scanner.scan(before).entries.mapNotNull { it.input }.sorted())
+        } finally { root.toFile().deleteRecursively() }
+    }
+
     @Test fun `quoted paths with hashes match exactly and relative paths do not`() {
         val root = Files.createTempDirectory("hoosage-jb-")
         try {
@@ -377,6 +405,24 @@ class UsageScannerTest {
             val result = scanner.scan(project)
             assertTrue(result.entries.isEmpty())
             assertEquals(1, result.skipped)
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test fun `a clipped session recovers when an earlier log no longer consumes the entry budget`() {
+        val root = Files.createTempDirectory("hoosage-jb-budget-")
+        try {
+            val project = root.resolve("project")
+            val state = Files.createDirectory(root.resolve("state"))
+            session(state, "older", "copilot-intellij", project,
+                listOf(shutdown("one", 100, 20, 1, 100), shutdown("two", 150, 30, 2, 150)))
+            Files.setLastModifiedTime(state.resolve("older/events.jsonl"), java.nio.file.attribute.FileTime.fromMillis(1000))
+            session(state, "newer", "copilot-intellij", project, listOf(shutdown("three", 10, 3, 1, 20)))
+            val scanner = UsageScanner(state, maxEntries = 2)
+            assertEquals(1, scanner.scan(project).skipped)
+            state.resolve("newer").toFile().deleteRecursively()
+            val recovered = scanner.scan(project)
+            assertEquals(0, recovered.skipped)
+            assertEquals(listOf(50L, 100L), recovered.entries.mapNotNull { it.input }.sorted())
         } finally { root.toFile().deleteRecursively() }
     }
 

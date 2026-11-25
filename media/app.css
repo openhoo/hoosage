@@ -337,18 +337,45 @@ h1 span {
   line-height: 1.8;
 }
 .toolbar {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-areas: "project period date export";
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   padding: 0 0 22px;
 }
 .toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  display: contents;
+}
+.toolbar > :is(.project-picker, .toolbar-title) {
+  grid-area: project;
+  justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+}
+.toolbar .range {
+  grid-area: period;
+  justify-self: start;
+}
+.toolbar .date-nav {
+  grid-area: date;
+  justify-self: start;
+}
+.toolbar .export {
+  grid-area: export;
+  justify-self: end;
+}
+@media (min-width: 1030px) and (max-width: 1309px) {
+  .toolbar {
+    grid-template-areas: "project export" "period date";
+    grid-template-columns: auto 1fr;
+  }
+}
+@media (max-width: 1029px) {
+  .toolbar {
+    grid-template-areas: "project export" "period period" "date date";
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
 }
 .toolbar-title {
   color: var(--muted);
@@ -374,8 +401,9 @@ h1 span {
   background: transparent;
   border: 0;
   color: var(--text);
-  min-width: 128px;
+  min-width: 0;
   max-width: 230px;
+  text-overflow: ellipsis;
   font-size: 13px;
   cursor: pointer;
   padding: 0 8px 0 0;
@@ -490,7 +518,9 @@ h1 span {
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--panel);
-  box-shadow: 0 22px 60px #0008, 0 4px 14px #0005;
+  box-shadow:
+    0 22px 60px #0008,
+    0 4px 14px #0005;
 }
 .calendar-backdrop {
   display: none;
@@ -960,23 +990,81 @@ h1 span {
   background: var(--accent);
 }
 .chart-wrap {
+  container-type: inline-size;
   padding: 26px 22px 20px 20px;
 }
 .chart {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: 154px 1.5em;
+  gap: 8px;
+  color: var(--faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-y {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  margin: -0.75em 0;
+  text-align: right;
+}
+.chart-plot {
   width: 100%;
-  height: auto;
-  min-height: 170px;
+  height: 100%;
   overflow: visible;
 }
-.chart text {
-  fill: var(--faint);
-  font-size: 12px;
-  font-family: inherit;
+.bar-hit {
+  fill: transparent;
+}
+.chart-bar:focus-visible .bar-hit {
+  fill: var(--panel-alt);
+  stroke: var(--accent);
+  stroke-width: 2px;
+}
+.chart-x {
+  display: flex;
+  grid-column: 2;
+}
+.chart-tick {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+}
+.chart-tick > span {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.chart-tick:first-child:not(:only-child) > span {
+  left: 0;
+  transform: none;
+}
+.chart-tick:last-child:not(:only-child) > span {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+@container (max-width: 430px) {
+  .chart-tick.minor > span {
+    display: none;
+  }
 }
 .gridline {
   stroke: var(--line);
   stroke-dasharray: 3 4;
   fill: none;
+}
+.bar-incomplete {
+  stroke: var(--text);
+  stroke-width: 2px;
+  stroke-dasharray: 2 2;
+}
+.chart-note {
+  color: var(--muted);
+  margin: 0 22px 15px;
+  font-size: 12px;
 }
 .bar-input {
   fill: #4c689c;
@@ -1082,6 +1170,11 @@ progress {
   border-radius: 5px;
   background: var(--line);
   accent-color: var(--tone, var(--accent));
+}
+.unknown-share {
+  display: block;
+  height: 4px;
+  border-top: 1px dashed var(--line);
 }
 progress::-webkit-progress-bar {
   background: var(--line);
@@ -1201,7 +1294,7 @@ th:last-child {
   gap: 12px;
   min-width: 100px;
 }
-.share-cell progress {
+.share-cell :is(progress, .unknown-share) {
   width: 85px;
   height: 3px;
 }
@@ -1317,7 +1410,11 @@ footer svg {
   text-align: center;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: radial-gradient(circle at 50% -30%, var(--accent-bg), var(--panel) 58%);
+  background: radial-gradient(
+    circle at 50% -30%,
+    var(--accent-bg),
+    var(--panel) 58%
+  );
   padding: 46px 25px 48px;
 }
 .onboarding > svg {
@@ -1650,6 +1747,10 @@ body.vscode-light .nav-item.selected {
   background: #e0e8f8;
   border-color: #c7d5ed;
 }
+body.vscode-light .nav-count {
+  background: var(--panel);
+  color: var(--muted);
+}
 body.vscode-light .privacy-tile {
   background: linear-gradient(140deg, #e4eaf6, var(--rail));
 }
@@ -1667,7 +1768,9 @@ body.vscode-light .bar-output {
 }
 body.vscode-light .calendar-popover,
 body.vscode-high-contrast-light .calendar-popover {
-  box-shadow: 0 20px 50px #30476a3d, 0 3px 12px #30476a1f;
+  box-shadow:
+    0 20px 50px #30476a3d,
+    0 3px 12px #30476a1f;
 }
 body.vscode-light .calendar-day.range-edge {
   color: #fff;
@@ -1727,9 +1830,6 @@ body.vscode-high-contrast-light .featured .stat-label {
   }
   .chart-wrap {
     padding-top: 30px;
-  }
-  .chart {
-    max-height: 240px;
   }
   .stat-number {
     font-size: 38px;
@@ -1795,13 +1895,6 @@ body.vscode-high-contrast-light .featured .stat-label {
   }
 }
 @media (max-width: 900px) {
-  .toolbar {
-    flex-wrap: wrap;
-  }
-  .toolbar-right {
-    width: 100%;
-    justify-content: flex-start;
-  }
   .projects-intro,
   .about-hero {
     flex-wrap: wrap;
@@ -1857,9 +1950,6 @@ body.vscode-high-contrast-light .featured .stat-label {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 20px;
-  }
-  .chart {
-    max-height: 240px;
   }
   .stat-label {
     font-size: 12px;
@@ -1982,7 +2072,7 @@ body.vscode-high-contrast-light .featured .stat-label {
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
-  .project-card-share progress {
+  .project-card-share :is(progress, .unknown-share) {
     grid-column: 1 / -1;
     height: 5px;
   }
@@ -2067,20 +2157,13 @@ body.vscode-high-contrast-light .featured .stat-label {
   }
   .toolbar {
     gap: 10px;
-    flex-wrap: wrap;
     padding-bottom: 18px;
-  }
-  .toolbar-right {
-    gap: 8px;
-    width: 100%;
-    justify-content: space-between;
   }
   .project-picker {
     padding: 7px 8px;
     max-width: 100%;
   }
   .project-picker select {
-    min-width: 100px;
     font-size: 12px;
   }
   .range button {
@@ -2121,8 +2204,11 @@ body.vscode-high-contrast-light .featured .stat-label {
     min-width: 0;
   }
   .date-trigger strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    text-wrap: balance;
+  }
+  .date-trigger > svg:last-child {
+    display: none;
   }
   .export {
     font-size: 12px;
@@ -2177,7 +2263,7 @@ body.vscode-high-contrast-light .featured .stat-label {
     padding-top: 15px;
   }
   .chart {
-    min-height: 140px;
+    grid-template-rows: 130px 1.5em;
   }
   .share-column {
     display: none;
@@ -2328,12 +2414,6 @@ body.vscode-high-contrast-light .featured .stat-label {
   }
   h1 {
     font-size: 30px;
-  }
-  .toolbar-right {
-    gap: 5px;
-  }
-  .project-picker select {
-    min-width: 85px;
   }
   .stat {
     padding: 13px;
