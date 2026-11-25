@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.1 (2026-11-25)
+
+### Bug Fixes
+
+- correct project usage totals, dashboard state and plugin packaging (#67) (e06a671)
+
 ## 0.16.0 (2026-10-19)
 
 ### Features
